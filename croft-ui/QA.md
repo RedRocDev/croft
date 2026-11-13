@@ -18,3 +18,9 @@
 - Chrome recorded zero page errors, error console messages, unsuccessful HTTP responses or external HTTP requests during these scenarios. Local image decode passed for the captured screens.
 
 The screenshot directory records the desktop views, overlays and narrow-viewport checks. This was browser prototype QA with sample content and UI state. Native runtime, storage and Windows installer verification remain outside this pass.
+
+## Minimal navigation follow-up
+
+`npm run build` passed with the updated UI. Chrome verified exactly five navigation items in order: Search, Home, Inbox, Settings and Trash. The Trash row ended 12 px above the sidebar bottom at 1440 × 900. Computed sidebar backgrounds were `#ffffff` in light mode and `#202020` in dark mode.
+
+The Home title and slogan rendered as Croft and “Space to grow.” All four recent pages opened. Mock search, Inbox, Trash and Settings worked, and Escape dismissed each dialog. The sidebar opened and closed at 1440 × 900 and 390 × 844, with focus restored to the replacement toggle. No page, console or HTTP errors or non-local service requests occurred in these checks. The nine `screenshots/minimal-*.png` files capture the revised screens.

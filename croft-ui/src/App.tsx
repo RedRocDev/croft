@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AlignLeft, ArrowLeft, ArrowRight, ArrowUpRight, Bell, Bold, BookOpen, CalendarDays,
-  Check, ChevronDown, ChevronRight, ChevronsUpDown, CircleHelp, ClipboardList, Code, Ellipsis,
-  FileText, Folders, GripVertical, Heading1, Heading2, House, Image, Italic, LayoutGrid, Lightbulb,
+  Check, ChevronDown, ChevronRight, ClipboardList, Code, Ellipsis,
+  FileText, Folders, GripVertical, Heading1, Heading2, House, Image, Inbox, Italic, LayoutGrid, Lightbulb,
   Link2, List, ListChecks, ListOrdered, MessageSquare, Monitor, Moon, PanelLeft, Plus, Quote,
-  Search, Settings2, Star, Sun, Table2, Trash2, Type, Underline, X,
+  Search, Settings, Settings2, Star, Sun, Table2, Trash2, Type, Underline, X,
 } from 'lucide-react'
 import { Database, type DatabaseView } from './Database'
 
 type Page = 'home' | 'handbook' | 'weekly' | 'meeting' | 'projects'
-type Overlay = 'search' | 'settings' | 'archive' | 'about' | 'new' | null
+type Overlay = 'search' | 'inbox' | 'settings' | 'archive' | 'about' | 'new' | null
 type Theme = 'light' | 'dark' | 'system'
 const pages = {
-  home: { name: 'Home', icon: House, colour: 'sage', location: 'Fieldwork Studio' },
+  home: { name: 'Home', icon: House, colour: 'sage', location: 'Croft' },
   handbook: { name: 'Studio handbook', icon: BookOpen, colour: 'sand', location: 'Studio' },
   weekly: { name: 'Weekly studio notes', icon: FileText, colour: 'lavender', location: 'Studio handbook' },
   meeting: { name: 'Meeting notes', icon: MessageSquare, colour: 'pink', location: 'Studio handbook' },
@@ -68,58 +68,26 @@ function Modal({ className = '', label, close, children }: { className?: string;
   )
 }
 
-function Home({ go, onSearch }: { go: (page: Page) => void; onSearch: () => void }) {
+function Home({ go }: { go: (page: Page) => void }) {
   return (
-    <article className="home">
-      <div className="home-cover">
-        <img src="/fieldwork-cover.webp" alt="Grassy dunes and tidal water on the Scottish coast" />
-      </div>
-      <div className="home-inner">
-        <span className="hero-logo"><Mark /></span>
-        <header className="home-title">
-          <div>
-            <h1>Fieldwork Studio</h1>
-            <p>Croft — Space to grow.</p>
-          </div>
-          <button className="quiet-button home-search" onClick={onSearch}><Search /> Search workspace <kbd>Ctrl K</kbd></button>
-        </header>
-        <section className="home-section">
-          <h2><Star /> Get started</h2>
-          <div className="quick-links">
-            {quickPages.map(item => <button className="quick-card" key={item.id} onClick={() => go(item.id)}>
-              <PageIcon id={item.id} tile />
-              <span><strong>{pages[item.id].name}</strong><small>{item.description}</small></span>
-              <ArrowUpRight className="quick-arrow" />
-            </button>)}
-          </div>
-        </section>
-        <div className="home-columns">
-          <section className="home-section">
-            <h2><ArrowLeft className="recent-icon" /> Recently visited</h2>
-            <div className="recent-list">
-              {recent.map(item => <button key={item.id} onClick={() => go(item.id)} className="recent-row">
-                <PageIcon id={item.id} tile />
-                <span><strong>{pages[item.id].name}</strong><small>{pages[item.id].location}</small></span>
-                <time>{item.time}</time>
-              </button>)}
-            </div>
-          </section>
-          <section className="home-section">
-            <h2><CalendarDays /> This week</h2>
-            <div className="agenda">
-              <div className="agenda-item">
-                <span className="agenda-date"><strong>13</strong><small>FRI</small></span>
-                <span><strong>Atlas design review</strong><small>11:00 · Studio</small></span>
-              </div>
-              <div className="agenda-item">
-                <span className="agenda-date"><strong>16</strong><small>MON</small></span>
-                <span><strong>Weekly studio planning</strong><small>09:30 · Team</small></span>
-              </div>
-              <button className="agenda-link" onClick={() => { location.hash = '#projects/calendar' }}>Open project calendar <ArrowRight /></button>
-            </div>
-          </section>
-        </div>
-      </div>
+    <article className="home" aria-labelledby="home-heading">
+      <header className="home-title">
+        <span className="home-mark" aria-hidden="true"><Mark /></span>
+        <h1 id="home-heading">Croft</h1>
+        <p>Space to grow.</p>
+      </header>
+      <section className="home-section" aria-labelledby="home-recent">
+        <h2 id="home-recent">Recently visited</h2>
+        <ul className="recent-list">
+          {recent.map(item => <li key={item.id}>
+            <button onClick={() => go(item.id)} className="recent-row">
+              <PageIcon id={item.id} />
+              <span className="recent-page">{pages[item.id].name}</span>
+              <span className="recent-time">{item.time}</span>
+            </button>
+          </li>)}
+        </ul>
+      </section>
     </article>
   )
 }
@@ -217,7 +185,7 @@ function SearchModal({ close, go }: { close: () => void; go: (page: Page) => voi
   return <Modal className="search-modal" label="Search workspace" close={close}>
     <div className="search-modal-top">
       <Search />
-      <input autoFocus placeholder="Search or ask a question in Fieldwork Studio…" aria-label="Search pages" value={query}
+      <input autoFocus placeholder="Search Croft…" aria-label="Search pages" value={query}
         onChange={e => { setQuery(e.target.value); setSelected(0) }}
         onKeyDown={e => {
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -251,14 +219,16 @@ const preferences = [
   { name: 'Language & time', icon: CalendarDays }, { name: 'General', icon: Folders },
 ] as const
 
-function SettingsModal({ close, theme, setTheme }: { close: () => void; theme: Theme; setTheme: (theme: Theme) => void }) {
+function SettingsModal({ close, theme, setTheme, openAbout }: {
+  close: () => void; theme: Theme; setTheme: (theme: Theme) => void; openAbout: () => void
+}) {
   const [category, setCategory] = useState<string>('Preferences')
   const [picker, setPicker] = useState(false)
   const current = themes.find(item => item.id === theme) ?? themes[0]
   return <Modal className="settings-modal" label="Workspace settings" close={close}>
     <aside className="settings-nav">
-      <div className="settings-person"><span className="avatar">AM</span><div><strong>Alex Morgan</strong><small>Fieldwork Studio</small></div></div>
-      <h2>Account</h2>
+      <div className="settings-person"><span className="workspace-badge"><Mark /></span><strong>Croft</strong></div>
+      <h2>Personal</h2>
       {preferences.slice(0, 3).map(({ name, icon: Icon }) =>
         <button key={name} data-active={category === name} onClick={() => { setPicker(false); setCategory(name) }}><Icon />{name}</button>)}
       <h2>Workspace</h2>
@@ -290,21 +260,36 @@ function SettingsModal({ close, theme, setTheme }: { close: () => void; theme: T
         <div className="setting-row"><div><h3>Time zone</h3><p>Calendar and reminder time zone.</p></div><span className="setting-value">Europe/London <ChevronDown /></span></div>
         <div className="setting-row"><div><h3>Start week on Monday</h3><p>Apply to workspace calendars.</p></div><span className="sample-switch" aria-label="On" /></div>
       </> : <>
-        <div className="setting-row"><div><h3>Workspace name</h3><p>The name shown in the sidebar.</p></div><span className="setting-value">Fieldwork Studio</span></div>
+        <div className="setting-row"><div><h3>Workspace name</h3><p>The name shown in the sidebar.</p></div><span className="setting-value">Croft</span></div>
         <div className="setting-row"><div><h3>Workspace icon</h3><p>The Croft geometric C mark.</p></div><span className="settings-mark"><Mark /></span></div>
+        <div className="setting-row"><div><h3>Croft</h3><p>Space to grow.</p></div><button className="quiet-button" onClick={openAbout}>About Croft</button></div>
       </>}
     </div>
+  </Modal>
+}
+
+function EmptyDialog({ label, message, icon: Icon, close }: {
+  label: string; message: string; icon: typeof Inbox; close: () => void
+}) {
+  return <Modal className="empty-dialog" label={label} close={close}>
+    <header className="empty-dialog-header">
+      <h2>{label}</h2>
+      <button className="icon-button" aria-label={'Close ' + label} onClick={close}><X /></button>
+    </header>
+    <div className="empty-dialog-body"><Icon aria-hidden="true" /><p>{message}</p></div>
   </Modal>
 }
 
 export function App() {
   const [current, setCurrent] = useState(route)
   const [overlay, setOverlay] = useState<Overlay>(null)
-  const [menu, setMenu] = useState<'workspace' | 'page' | 'share' | 'inbox' | null>(null)
+  const [menu, setMenu] = useState<'page' | 'share' | null>(null)
   const [theme, setTheme] = useState<Theme>('light')
   const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
   const [treeOpen, setTreeOpen] = useState(true)
   const [sidebar, setSidebar] = useState(() => innerWidth >= 800)
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null)
+  const focusSidebarToggle = useRef(false)
   const [editorState, setEditorState] = useState<'slash' | 'format' | null>(null)
   const [starred, setStarred] = useState<Page[]>(['handbook', 'projects'])
   const { page, view } = current
@@ -329,6 +314,12 @@ export function App() {
   }, [])
   useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light' }, [dark])
   useEffect(() => {
+    if (focusSidebarToggle.current) {
+      sidebarToggleRef.current?.focus()
+      focusSidebarToggle.current = false
+    }
+  }, [sidebar])
+  useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && ['k', 'p'].includes(event.key.toLowerCase())) {
         event.preventDefault()
@@ -351,6 +342,11 @@ export function App() {
   }, [overlay, page, dark])
 
   const openOverlay = (next: Overlay) => { setMenu(null); setOverlay(next) }
+  const closeOverlay = () => setOverlay(null)
+  const toggleSidebar = () => {
+    focusSidebarToggle.current = true
+    setSidebar(open => !open)
+  }
   const toggleMenu = (next: typeof menu) => setMenu(menu === next ? null : next)
   const toggleStar = () => setStarred(items => items.includes(page) ? items.filter(id => id !== page) : [...items, page])
   const sidebarLink = (id: Page, indent = false) => (
@@ -361,25 +357,36 @@ export function App() {
 
   return <div className="shell" data-sidebar={sidebar ? 'open' : 'closed'}>
     {sidebar && <>
-      <button className="mobile-scrim" aria-label="Close sidebar" onClick={() => setSidebar(false)} />
-      <aside className="sidebar" aria-label="Workspace sidebar">
-        <div className="workspace-switch-wrap">
-          <button className="workspace-switch" aria-expanded={menu === 'workspace'} onClick={() => toggleMenu('workspace')}>
-            <span className="workspace-badge"><Mark /></span>
-            <span><strong>Fieldwork Studio</strong><small>Croft workspace</small></span><ChevronsUpDown className="switch-caret" />
-          </button>
-          {menu === 'workspace' && <div className="popover workspace-menu">
-            <button onClick={() => openOverlay('settings')}><Settings2 /> Settings</button>
-            <button onClick={() => setTheme(dark ? 'light' : 'dark')}>{dark ? <Sun /> : <Moon />} {dark ? 'Light appearance' : 'Dark appearance'}</button>
-            <button onClick={() => openOverlay('about')}><CircleHelp /> About Croft</button>
-          </div>}
+      <button className="mobile-scrim" aria-label="Dismiss sidebar" tabIndex={-1} onClick={toggleSidebar} />
+      <aside id="workspace-sidebar" className="sidebar" aria-label="Workspace sidebar">
+        <div className="sidebar-header">
+          <span className="workspace-badge"><Mark /></span>
+          <strong>Croft</strong>
+          <button ref={sidebarToggleRef} className="icon-button collapse-sidebar" title="Collapse sidebar" aria-label="Collapse sidebar"
+            aria-expanded="true" aria-controls="workspace-sidebar" onClick={toggleSidebar}><PanelLeft /></button>
         </div>
-        <nav className="primary-nav" aria-label="Workspace">
-          <button className="side-link" onClick={() => openOverlay('search')}><Search /><span>Search</span><kbd>Ctrl K</kbd></button>
-          {sidebarLink('home')}
-          <button className="side-link" onClick={() => toggleMenu('inbox')}><Bell /><span>Inbox</span></button>
+        <nav className="primary-nav" aria-label="Workspace navigation">
+          <div className="nav-group">
+            <button className="side-link" data-active={overlay === 'search'} aria-haspopup="dialog" onClick={() => openOverlay('search')}>
+              <Search /><span>Search</span><kbd aria-hidden="true">Ctrl K</kbd>
+            </button>
+            <button className="side-link" aria-current={page === 'home' ? 'page' : undefined} onClick={() => go('home')}>
+              <House /><span>Home</span>
+            </button>
+            <button className="side-link" data-active={overlay === 'inbox'} aria-haspopup="dialog" onClick={() => openOverlay('inbox')}>
+              <Inbox /><span>Inbox</span>
+            </button>
+          </div>
+          <div className="nav-group rail-footer">
+            <button className="side-link" data-active={overlay === 'settings'} aria-haspopup="dialog" onClick={() => openOverlay('settings')}>
+              <Settings /><span>Settings</span>
+            </button>
+            <button className="side-link" data-active={overlay === 'archive'} aria-haspopup="dialog" onClick={() => openOverlay('archive')}>
+              <Trash2 /><span>Trash</span>
+            </button>
+          </div>
         </nav>
-        <div className="sidebar-scroll">
+        <div className="sidebar-scroll" hidden>
           <section className="rail-group">
             <div className="rail-label">Favourites</div>
             {starred.filter(id => id !== 'home').map(id => sidebarLink(id))}
@@ -396,57 +403,49 @@ export function App() {
             <button className="side-link side-new" onClick={() => openOverlay('new')}><Plus /><span>New page</span></button>
           </section>
         </div>
-        <footer className="rail-footer">
-          <button className="side-link" onClick={() => openOverlay('settings')}><Settings2 /><span>Settings</span></button>
-          <button className="side-link" onClick={() => openOverlay('archive')}><Trash2 /><span>Trash</span></button>
-          <div className="rail-divider" />
-          <button className="side-link profile" onClick={() => openOverlay('about')}><span className="avatar">AM</span>
-            <span><strong>Alex Morgan</strong><small>Fieldwork Studio</small></span><Ellipsis /></button>
-        </footer>
       </aside>
     </>}
     <main className="workspace-main">
       <header className="topbar">
         <div className="topbar-start">
-          <button className="icon-button side-toggle" title="Toggle sidebar" aria-label="Toggle sidebar" onClick={() => setSidebar(!sidebar)}><PanelLeft /></button>
-          <button className="icon-button history-arrow" title="Back" aria-label="Back" onClick={() => history.back()}><ArrowLeft /></button>
-          <button className="icon-button history-arrow" title="Forward" aria-label="Forward" onClick={() => history.forward()}><ArrowRight /></button>
-          <span className="topbar-separator" />
+          {!sidebar && <button ref={sidebarToggleRef} className="icon-button side-toggle" title="Open sidebar" aria-label="Open sidebar"
+            aria-expanded="false" onClick={toggleSidebar}><PanelLeft /></button>}
+          {page !== 'home' && <>
+            <button className="icon-button history-arrow" title="Back" aria-label="Back" onClick={() => history.back()}><ArrowLeft /></button>
+            <button className="icon-button history-arrow" title="Forward" aria-label="Forward" onClick={() => history.forward()}><ArrowRight /></button>
+            <span className="topbar-separator" />
+          </>}
           <nav className="crumbs" aria-label="Breadcrumbs">
-            <button onClick={() => go('home')}>Fieldwork Studio</button><ChevronRight />
+            {page !== 'home' && <><button onClick={() => go('home')}>Croft</button><ChevronRight /></>}
             {(page === 'weekly' || page === 'meeting') && <><button onClick={() => go('handbook')}>Studio handbook</button><ChevronRight /></>}
             <span aria-current="page"><PageIcon id={page} />{pages[page].name}</span>
           </nav>
         </div>
-        <div className="topbar-end">
+        {page !== 'home' && <div className="topbar-end">
           <button className="top-share" aria-expanded={menu === 'share'} onClick={() => toggleMenu('share')}>Share</button>
           <button className="icon-button" aria-pressed={starred.includes(page)} aria-label="Toggle favourite" title="Favourite" onClick={toggleStar}><Star /></button>
           <button className="icon-button" aria-label="Page options" aria-expanded={menu === 'page'} onClick={() => toggleMenu('page')}><Ellipsis /></button>
           {menu === 'page' && <div className="popover top-menu">
             <button onClick={() => { toggleStar(); setMenu(null) }}><Star /> {starred.includes(page) ? 'Remove from favourites' : 'Add to favourites'}</button>
-            {page !== 'home' && page !== 'projects' && <>
+            {page !== 'projects' && <>
               <button onClick={() => { setEditorState('slash'); setMenu(null); requestAnimationFrame(() => document.querySelector('.mock-block')?.scrollIntoView({ block: 'center' })) }}><Plus /> Slash commands</button>
               <button onClick={() => { setEditorState('format'); setMenu(null); requestAnimationFrame(() => document.querySelector('.editable-example')?.scrollIntoView({ block: 'center' })) }}><AlignLeft /> Formatting toolbar</button>
             </>}
             <button onClick={() => openOverlay('settings')}><Settings2 /> Settings</button>
           </div>}
           {menu === 'share' && <div className="popover small-preview"><h3>Share page</h3><div><span className="avatar">AM</span> Alex Morgan <small>Owner</small></div><p>Only you have access to this sample page.</p></div>}
-        </div>
+        </div>}
       </header>
       <div className="workspace-scroll" key={page}>
-        {page === 'home' ? <Home go={go} onSearch={() => openOverlay('search')} /> :
+        {page === 'home' ? <Home go={go} /> :
           page === 'projects' ? <Database view={view} onView={tab => { location.hash = 'projects/' + tab; setCurrent({ page, view: tab }) }} /> :
           <Document key={page} page={page} go={go} editorState={editorState} setEditorState={setEditorState} />}
       </div>
     </main>
-    {menu === 'inbox' && <Modal className="small-modal" label="Inbox" close={() => setMenu(null)}><div className="simple-dialog">
-      <Bell /><h2>Inbox</h2><p>You’re all caught up.</p><button className="quiet-button" onClick={() => setMenu(null)}>Done</button>
-    </div></Modal>}
-    {overlay === 'search' && <SearchModal close={() => setOverlay(null)} go={go} />}
-    {overlay === 'settings' && <SettingsModal close={() => setOverlay(null)} theme={theme} setTheme={setTheme} />}
-    {overlay === 'archive' && <Modal className="small-modal" label="Trash" close={() => setOverlay(null)}><div className="simple-dialog">
-      <Trash2 /><h2>Trash</h2><p>Trash is empty.</p><button className="quiet-button" onClick={() => setOverlay(null)}>Close</button>
-    </div></Modal>}
+    {overlay === 'inbox' && <EmptyDialog label="Inbox" message="You’re all caught up." icon={Inbox} close={closeOverlay} />}
+    {overlay === 'search' && <SearchModal close={closeOverlay} go={go} />}
+    {overlay === 'settings' && <SettingsModal close={closeOverlay} theme={theme} setTheme={setTheme} openAbout={() => openOverlay('about')} />}
+    {overlay === 'archive' && <EmptyDialog label="Trash" message="Trash is empty." icon={Trash2} close={closeOverlay} />}
     {overlay === 'new' && <Modal className="small-modal" label="New page preview" close={() => setOverlay(null)}><div className="simple-dialog">
       <FileText /><h2>New page</h2><p>Preview a document or database template.</p><div className="template-actions">
         <button className="quiet-button" onClick={() => go('handbook')}><ClipboardList /> Document</button>

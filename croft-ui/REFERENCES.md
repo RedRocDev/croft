@@ -2,6 +2,18 @@
 
 13 November 2026. Live read-only Mobbin search returned Notion web previews in this session. The images below were inspected in the connector. Mobbin imagery and example content are reference material. Croft uses its supplied mark and synthetic workspace data.
 
+## Minimal workspace pass
+
+The latest live searches covered the workspace sidebar, a blank page, and appearance. These are the visual references for the minimal Croft interface. The tables and galleries below document the earlier prototype.
+
+| State | Visible details | Croft mapping |
+| --- | --- | --- |
+| Blank document | The pale rail takes about 18% of the 768 px preview. The main pane has a thin top bar, a muted New page heading, open space and a row of small starter actions. [Blank Notion page](https://mobbin.com/screens/8a1f646f-da51-4baa-a89d-489e6e7035a5) | Croft uses a slim top bar and a centred welcome with a short list of recent sample pages. The light sidebar is white by request. |
+| Workspace menu | A small menu opens directly below the workspace name. A compact header and faint dividers separate short groups. An icon and check mark identify the current workspace. [Notion workspace menu](https://mobbin.com/screens/eb0b0242-8e97-41c0-b2b0-f7446a6f7b3c) | Croft carries over the short icon-and-label rows and subtle selected state. Its fixed sidebar header shows the Croft mark and a collapse control. |
+| Appearance | The preferences pane places the theme label on the left and the choice on the right. The open dropdown fits system, light and dark in a short checked list. [Appearance row](https://mobbin.com/screens/878083d9-f5bf-4a48-80c4-5fb59814524d) · [Open theme menu](https://mobbin.com/screens/6c6b018e-3227-461b-8426-4bdb502bc2e1) | The two-pane Settings dialog uses right-aligned controls and a short checked list of Croft themes. |
+
+The reference images establish visible placement, size and hierarchy. See [the QA report](QA.md) for keyboard and dismissal checks in Croft.
+
 ## Live references
 
 | State | Visible details | Croft mapping |

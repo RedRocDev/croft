@@ -1,6 +1,6 @@
 # Croft — Space to grow.
 
-Croft is a localhost UI prototype for a design studio workspace. It includes Home, the studio handbook and its nested pages, a Projects database preview with Table, Board, Calendar, Gallery and List layouts, workspace Search, and Settings with light, dark and system appearances.
+Croft is a localhost UI prototype with a branded Home and five sidebar items: Search, Home, Inbox, Settings and Trash. The sample handbook, nested pages and Projects layouts are accessible from Home or mock Search.
 
 ## Run locally
 
@@ -24,9 +24,9 @@ The production build goes to `dist/`. The project uses the published WebAssembly
 
 ## Explore
 
-- Use the sidebar to open the handbook and expand its nested pages.
+- Open the handbook from Recently visited on Home. Its sample links open the nested pages.
 - In the handbook, click the sample sentence “Write down what changed and why.” for the formatting toolbar, or press `/` for the slash menu. The page options menu also opens both previews.
-- Open Projects to switch views and preview records. Calendar navigation, filters, sorting and query previews use the same in-memory sample data.
+- Open Projects from Home to switch views and preview records. Calendar navigation, filters, sorting and query previews use the same in-memory sample data.
 - Press `Ctrl+K` to open workspace Search. Use Settings → Preferences → Appearance for light, dark and system views.
 
 Page content, settings examples, sharing, and templates are mock states. The prototype has no backend, storage, sign-in, real document editing, or synchronization. Theme and other preview selections reset when the page reloads.
