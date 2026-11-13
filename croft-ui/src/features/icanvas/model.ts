@@ -30,6 +30,7 @@ export type CanvasSettings = {
   showEdges: Record<EdgeKind, boolean>; toolbar: 'floating' | 'parked'; toolbarPoint: Point
   panel: 'properties' | 'layers' | 'closed'
   inspectorSide?: 'left' | 'right'
+  inspectorWidth?: number
 }
 export type CanvasProject = {
   id: string; parentId: string | null; name: string; description: string; icon: string; coverAssetId?: string; iconAssetId?: string
@@ -41,6 +42,7 @@ export type CanvasProject = {
 export type CanvasAsset = { id: string; name: string; mime: string; size: number; blob?: Blob; handle?: FileSystemFileHandle; linked?: boolean }
 export type Placement = 'smart' | 'free'
 
+export const inspectorWidth = { default: 248, min: 200, max: 480 } as const
 export const palette = ['#f5e7a5', '#cfe9d8', '#dbe7fa', '#eddcf5', '#f5dcd4', '#f0eee9', '#335e4c']
 export const projectIcons = ['◈', '✦', '⌂', '✿', '◎', '▦']
 export const kinds: Record<ObjectKind, string> = {

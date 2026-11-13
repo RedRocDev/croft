@@ -144,7 +144,7 @@ span.ic-object-title { display: block; text-align: center; }
   --ic-inspector-left: var(--ic-inspector-inset);
   --ic-minimap-clearance: 122px;
   position: absolute; z-index: 5; top: 63px; right: var(--ic-inspector-inset);
-  width: min(248px, calc(100% - var(--ic-inspector-left) - var(--ic-inspector-inset)));
+  max-width: calc(100% - var(--ic-inspector-left) - var(--ic-inspector-inset));
   max-height: calc(100% - 127px); display: flex; box-shadow: var(--ic-shadow); border-radius: 8px;
 }
 .ic-inspector-shell[data-side="left"] { right: auto; left: var(--ic-inspector-left); }

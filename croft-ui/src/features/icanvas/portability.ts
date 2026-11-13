@@ -1,7 +1,7 @@
 import { zipSync } from 'fflate'
 import { GRID_SPACING, rotatedBounds } from './geometry.ts'
 import { readableInk } from './colour.ts'
-import { cardFace, cardSide, objectAssetIds, objectFlags, type CanvasAsset, type CanvasProject, type CanvasObject, type CanvasSettings, type TextAlignment } from './model.ts'
+import { cardFace, cardSide, inspectorWidth, objectAssetIds, objectFlags, type CanvasAsset, type CanvasProject, type CanvasObject, type CanvasSettings, type TextAlignment } from './model.ts'
 import { assertStackMembership } from './stackPersistence.ts'
 import { layoutStacks } from './stackScene.ts'
 import { assertCanvasImageMetadata, assertEditedImageAsset, canvasFormatVersion, editedImageAssetIds, readProjectSwatches, type CanvasFormatVersion } from './imagePersistence.ts'
@@ -151,6 +151,7 @@ function readSettings(value: unknown): CanvasSettings {
     toolbar: oneOf(data.toolbar, ['floating', 'parked']), toolbarPoint: readPoint(data.toolbarPoint),
     panel: oneOf(data.panel, ['properties', 'layers', 'closed']),
     ...(data.inspectorSide !== undefined && { inspectorSide: oneOf(data.inspectorSide, ['left', 'right']) }),
+    ...(data.inspectorWidth !== undefined && { inspectorWidth: number(data.inspectorWidth, inspectorWidth.min, inspectorWidth.max) }),
   }
 }
 

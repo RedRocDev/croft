@@ -12,6 +12,7 @@ test('editable package preserves nested canvases, media, edges, and presentation
   const root = originals[0]
   root.camera = { x: -64e12 - 128, y: 64e12 + 128, zoom: 64 }
   root.settings.inspectorSide = 'left'
+  root.settings.inspectorWidth = 384
   const sourceFrame = root.objects.find(item => item.kind === 'frame')
   sourceFrame.frameBase = { x: -20, y: 315, width: 520, height: 220, rotation: 0 }
   sourceFrame.width = 960
@@ -33,7 +34,9 @@ test('editable package preserves nested canvases, media, edges, and presentation
   assert.equal(copy.parentId, null)
   assert.deepEqual(copy.camera, root.camera)
   assert.equal(copy.settings.inspectorSide, 'left')
+  assert.equal(copy.settings.inspectorWidth, 384)
   assert.equal(child.settings.inspectorSide, undefined)
+  assert.equal(child.settings.inspectorWidth, undefined)
   assert.equal(child.parentId, copy.id)
   assert.equal(grandchild.parentId, child.id)
   assert.equal(copy.objects.find((item) => item.kind === 'canvas').targetId, child.id)

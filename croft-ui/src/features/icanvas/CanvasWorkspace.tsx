@@ -1520,9 +1520,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           <button className="ic-icon" aria-label="Zoom in" onClick={() => zoom(camera.zoom * 1.25)}><Plus /></button>
           <button className="ic-icon" aria-label="Fit All" title="Fit All" onClick={() => fit()}><Maximize /></button>
         </div>
-        {panelOpen && <div className="ic-inspector-shell" data-side={settings.inspectorSide ?? 'right'}
-          data-toolbar-parked={settings.toolbar === 'parked'} data-minimap={settings.minimap} data-card-scroll
-          onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge} mediaTools={mediaInspector}
+        {panelOpen && <CanvasInspector project={project} stageWidth={size.width} selected={chosen} activeEdge={activeEdge} mediaTools={mediaInspector}
           select={id => {
             const object = indexed.map.get(id)
             if (object && object.parentId && indexed.map.get(object.parentId)?.stack) revealCard(object)
@@ -1533,7 +1531,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           removeBackAttachment={object => changeObject(object, { back: { ...cardFace(object, 'back'), assetId: undefined, imageEdits: undefined, audioAppearance: undefined } })}
           selectStackMember={(_, member) => revealCard(member)} removeFromStack={removeFromStack} setStackFanned={changeStackLayout}
           unstack={object => stackAction(() => unstackAll(project.objects, object.id), object.stack?.order[0])}
-          deleteStack={object => { setStackToDelete(object.id); show('deleteStack') }} /></div>}
+          deleteStack={object => { setStackToDelete(object.id); show('deleteStack') }} />}
         {(feedback || error) && <div className="ic-toast" role="status" onPointerDown={event => event.stopPropagation()}>{feedback || error}
           {error && canEdit && <><button onClick={() => void flush().catch(onError)}>Retry</button><button onClick={() => show('export')}>Export current draft</button></>}<button className="ic-icon" aria-label="Dismiss message" onClick={() => setFeedback('')}><X /></button></div>}
       </>}

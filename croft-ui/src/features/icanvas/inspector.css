@@ -68,6 +68,26 @@
   border-right: 1px solid var(--border);
 }
 
+.ic-inspector-resize {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: -12px;
+  width: 14px;
+  display: grid;
+  place-items: center;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.ic-inspector-shell[data-side="left"] .ic-inspector-resize { right: -12px; left: auto; }
+.ic-inspector-resize::after { content: ''; width: 3px; height: 32px; border-radius: 3px; background: var(--quiet); }
+.ic-inspector-resize:hover::after, .ic-inspector-resize[data-resizing="true"]::after { background: var(--accent); }
+.ic-inspector-resize:focus-visible { outline: none; }
+.ic-inspector-resize:focus-visible::after { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .ic-inspector-tabs > .ic-inspector-dock,
 .ic-inspector-tabs > .ic-inspector-close {
   display: inline-grid;

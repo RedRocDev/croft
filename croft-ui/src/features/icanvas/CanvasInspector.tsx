@@ -1,11 +1,11 @@
-import { useId, useMemo, useState, type ReactNode } from 'react'
+import { useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ColourPicker } from './ColourPicker'
 import {
   ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronDown, ChevronRight,
   Eye, EyeOff, Layers, Lock, PanelLeft, PanelRight, SlidersHorizontal, Unlock, X,
 } from 'lucide-react'
 import {
-  canFlip, cardSide, colourForEdge, kinds, objectFlags,
+  canFlip, cardSide, colourForEdge, inspectorWidth, kinds, objectFlags,
   type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type ProjectSwatch,
 } from './model'
 import './inspector.css'
@@ -26,6 +26,7 @@ type CardActions = {
 
 interface InspectorProps extends CardActions {
   project: CanvasProject
+  stageWidth: number
   selected: CanvasObject[]
   activeEdge?: CanvasEdge
   select: (id: string) => void
@@ -36,6 +37,72 @@ interface InspectorProps extends CardActions {
   fitFrame: (object: CanvasObject) => void
   settings: (patch: Partial<CanvasSettings>) => void
   mediaTools?: ReactNode
+}
+
+function ResizableInspector({ children, panelId, stageWidth, settings, onResize }: {
+  children: ReactNode; panelId: string; stageWidth: number; settings: CanvasSettings; onResize: (width: number) => void
+}) {
+  const [draft, setDraft] = useState<number>()
+  const drag = useRef<{ id: number; startX: number; startWidth: number } | undefined>(undefined)
+  const side = settings.inspectorSide ?? 'right'
+  const parked = settings.toolbar === 'parked'
+  const outward = side === 'left' ? 1 : -1
+  // Match the parked-toolbar offset and leave canvas space at the moving edge.
+  const inset = parked && side === 'left' ? 60 : 12
+  const max = stageWidth ? Math.max(1, Math.min(inspectorWidth.max, Math.floor(stageWidth - inset - 64))) : inspectorWidth.max
+  const min = Math.min(inspectorWidth.min, max)
+  const clamp = (width: number) => Math.max(min, Math.min(max, Math.round(width)))
+  const width = clamp(draft ?? settings.inspectorWidth ?? inspectorWidth.default)
+
+  function endDrag(handle: HTMLElement, id: number) {
+    drag.current = undefined
+    setDraft(undefined)
+    if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id)
+  }
+
+  return <div className="ic-inspector-shell" data-side={side} data-toolbar-parked={parked}
+    data-minimap={settings.minimap} data-card-scroll style={{ width }} onPointerDown={event => event.stopPropagation()}>
+    {children}
+    {(min < max || draft !== undefined) && <div className="ic-inspector-resize" role="separator" aria-orientation="vertical" aria-label="Resize inspector"
+      aria-controls={panelId} aria-valuemin={min} aria-valuemax={max} aria-valuenow={width} aria-valuetext={`${width} pixels`}
+      title="Drag to resize inspector" tabIndex={0} data-resizing={draft !== undefined}
+      onPointerDown={event => {
+        if (event.button !== 0 || drag.current) return
+        event.preventDefault()
+        event.currentTarget.focus({ preventScroll: true })
+        event.currentTarget.setPointerCapture(event.pointerId)
+        drag.current = { id: event.pointerId, startX: event.clientX, startWidth: width }
+        setDraft(width)
+      }}
+      onPointerMove={event => {
+        const active = drag.current
+        if (active?.id === event.pointerId) setDraft(clamp(active.startWidth + (event.clientX - active.startX) * outward))
+      }}
+      onPointerUp={event => {
+        const active = drag.current
+        if (active?.id !== event.pointerId) return
+        const next = clamp(active.startWidth + (event.clientX - active.startX) * outward)
+        endDrag(event.currentTarget, event.pointerId)
+        if (next >= inspectorWidth.min && next !== active.startWidth) onResize(next)
+      }}
+      onPointerCancel={event => { if (drag.current?.id === event.pointerId) endDrag(event.currentTarget, event.pointerId) }}
+      onLostPointerCapture={event => { if (drag.current?.id === event.pointerId) endDrag(event.currentTarget, event.pointerId) }}
+      onKeyDown={event => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return
+        if (drag.current) {
+          if (event.key === 'Escape') endDrag(event.currentTarget, drag.current.id)
+          event.preventDefault()
+          event.stopPropagation()
+          return
+        }
+        const delta = event.key === 'ArrowLeft' ? -10 : event.key === 'ArrowRight' ? 10 : 0
+        const next = event.key === 'Home' ? min : event.key === 'End' ? max : delta ? clamp(width + delta * outward) : undefined
+        if (next === undefined) return
+        event.preventDefault()
+        event.stopPropagation()
+        if (next !== width) onResize(next)
+      }} />}
+  </div>
 }
 
 function NumberField({ label, value, onCommit, min, max }: {
@@ -324,8 +391,9 @@ function ObjectLayers({ objects, selected, select, update }: {
   return objects.length ? layers() : <p className="ic-inspector-status">This canvas has no layers yet.</p>
 }
 
-export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings, mediaTools, ...cardActions }: InspectorProps) {
-  const bodyId = useId()
+export function CanvasInspector({ project, stageWidth, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings, mediaTools, ...cardActions }: InspectorProps) {
+  const panelId = useId()
+  const bodyId = `${panelId}-body`
   const panel = project.settings.panel
   const nextSide = project.settings.inspectorSide === 'left' ? 'right' : 'left'
   const dockLabel = `Dock inspector on the ${nextSide}`
@@ -335,27 +403,30 @@ export function CanvasInspector({ project, selected, activeEdge, select, update,
   const objects = new Map(project.objects.map(item => [item.id, item]))
   const edge = activeEdge && selected.length === 0 ? activeEdge : undefined
 
-  return <aside className="ic-inspector" aria-label="Canvas inspector">
-    <div className="ic-inspector-tabs" aria-label="Inspector panel">
-      <button type="button" aria-pressed={panel === 'properties'} aria-controls={bodyId}
-        onClick={() => settings({ panel: 'properties' })}><SlidersHorizontal /> Properties</button>
-      <button type="button" aria-pressed={panel === 'layers'} aria-controls={bodyId}
-        onClick={() => settings({ panel: 'layers' })}><Layers /> Layers</button>
-      <button type="button" className="ic-inspector-icon ic-inspector-dock" aria-label={dockLabel} title={dockLabel}
-        onClick={() => settings({ inspectorSide: nextSide })}>{nextSide === 'left' ? <PanelLeft /> : <PanelRight />}</button>
-      <button type="button" className="ic-inspector-icon ic-inspector-close" aria-label="Close inspector"
-        title="Close inspector" onClick={() => settings({ panel: 'closed' })}><X /></button>
-    </div>
-    <div id={bodyId} className="ic-inspector-body">
-      {panel === 'layers' ? <ObjectLayers objects={project.objects} selected={selected} select={select} update={update} /> :
-        edge ? <fieldset className="ic-inspector-section" key={edge.id}>
-          <legend>{edge.kind.charAt(0).toUpperCase() + edge.kind.slice(1)}</legend>
-          <TextField label="Label" value={edge.label} onCommit={label => updateEdge(edge, { label })} />
-          <ColourPicker colour={edge.colour ?? colourForEdge[edge.kind]} swatches={project.swatches} onChange={colour => updateEdge(edge, { colour })} />
-        </fieldset> :
-        object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame}
-          mediaTools={mediaTools} swatches={project.swatches} {...cardActions} /> :
-        <p className="ic-inspector-status">{selected.length ? selected.length + ' objects selected. Select one object to edit its properties.' : 'Select an object or connection to inspect it.'}</p>}
-    </div>
-  </aside>
+  return <ResizableInspector panelId={panelId} stageWidth={stageWidth} settings={project.settings}
+    onResize={inspectorWidth => settings({ inspectorWidth })}>
+    <aside id={panelId} className="ic-inspector" aria-label="Canvas inspector">
+      <div className="ic-inspector-tabs" aria-label="Inspector panel">
+        <button type="button" aria-pressed={panel === 'properties'} aria-controls={bodyId}
+          onClick={() => settings({ panel: 'properties' })}><SlidersHorizontal /> Properties</button>
+        <button type="button" aria-pressed={panel === 'layers'} aria-controls={bodyId}
+          onClick={() => settings({ panel: 'layers' })}><Layers /> Layers</button>
+        <button type="button" className="ic-inspector-icon ic-inspector-dock" aria-label={dockLabel} title={dockLabel}
+          onClick={() => settings({ inspectorSide: nextSide })}>{nextSide === 'left' ? <PanelLeft /> : <PanelRight />}</button>
+        <button type="button" className="ic-inspector-icon ic-inspector-close" aria-label="Close inspector"
+          title="Close inspector" onClick={() => settings({ panel: 'closed' })}><X /></button>
+      </div>
+      <div id={bodyId} className="ic-inspector-body">
+        {panel === 'layers' ? <ObjectLayers objects={project.objects} selected={selected} select={select} update={update} /> :
+          edge ? <fieldset className="ic-inspector-section" key={edge.id}>
+            <legend>{edge.kind.charAt(0).toUpperCase() + edge.kind.slice(1)}</legend>
+            <TextField label="Label" value={edge.label} onCommit={label => updateEdge(edge, { label })} />
+            <ColourPicker colour={edge.colour ?? colourForEdge[edge.kind]} swatches={project.swatches} onChange={colour => updateEdge(edge, { colour })} />
+          </fieldset> :
+          object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame}
+            mediaTools={mediaTools} swatches={project.swatches} {...cardActions} /> :
+          <p className="ic-inspector-status">{selected.length ? selected.length + ' objects selected. Select one object to edit its properties.' : 'Select an object or connection to inspect it.'}</p>}
+      </div>
+    </aside>
+  </ResizableInspector>
 }
