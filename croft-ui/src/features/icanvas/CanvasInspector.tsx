@@ -65,7 +65,13 @@ function ResizableInspector({ children, panelId, stageWidth, settings, onResize 
     {children}
     {(min < max || draft !== undefined) && <div className="ic-inspector-resize" role="separator" aria-orientation="vertical" aria-label="Resize inspector"
       aria-controls={panelId} aria-valuemin={min} aria-valuemax={max} aria-valuenow={width} aria-valuetext={`${width} pixels`}
-      title="Drag to resize inspector" tabIndex={0} data-resizing={draft !== undefined}
+      title="Drag to resize. Double-click to reset width." tabIndex={0} data-resizing={draft !== undefined}
+      onDoubleClick={event => {
+        event.stopPropagation()
+        if (settings.inspectorWidth !== undefined && settings.inspectorWidth !== inspectorWidth.default) {
+          onResize(inspectorWidth.default)
+        }
+      }}
       onPointerDown={event => {
         if (event.button !== 0 || drag.current) return
         event.preventDefault()
