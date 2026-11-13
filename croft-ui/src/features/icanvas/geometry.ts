@@ -9,6 +9,7 @@ export interface Size {
 }
 
 export interface Rect extends Point, Size {}
+export interface OrientedRect extends Rect { rotation: number }
 
 export interface Viewport extends Point {
   zoom: number
@@ -237,7 +238,7 @@ export function transformDescendant<T extends Rect & { rotation: number; points?
     points: scale === 1 ? child.points : child.points?.map(point => ({ x: point.x * scale, y: point.y * scale })) }
 }
 
-export function fitFrameAround<T extends Rect & { rotation: number }>(frame: T, child: Rect & { rotation: number }): T {
+function frameLocalBounds(frame: OrientedRect, child: OrientedRect): Bounds {
   const center = rectCenter(frame)
   const childCenter = rectCenter(child)
   const angle = frame.rotation * Math.PI / 180
@@ -245,15 +246,35 @@ export function fitFrameAround<T extends Rect & { rotation: number }>(frame: T, 
   const dx = childCenter.x - center.x, dy = childCenter.y - center.y
   const x = dx * cos + dy * sin + frame.width / 2 - child.width / 2
   const y = -dx * sin + dy * cos + frame.height / 2 - child.height / 2
-  const bounds = rotatedBounds({ ...child, x, y }, child.rotation - frame.rotation)
-  const left = Math.min(0, bounds.left - 24), right = Math.max(frame.width, bounds.right + 24)
-  const top = Math.min(0, bounds.top - 32), bottom = Math.max(frame.height, bounds.bottom + 24)
-  if (left === 0 && right === frame.width && top === 0 && bottom === frame.height) return frame
+  return rotatedBounds({ ...child, x, y }, child.rotation - frame.rotation)
+}
+
+function frameWithBounds<T extends OrientedRect>(frame: T, { left, top, right, bottom }: Bounds): T {
+  if (Math.max(Math.abs(left), Math.abs(top), Math.abs(right - frame.width), Math.abs(bottom - frame.height)) < 1e-8) return frame
+  const center = rectCenter(frame)
+  const angle = frame.rotation * Math.PI / 180
+  const cos = Math.cos(angle), sin = Math.sin(angle)
   const shiftX = (left + right - frame.width) / 2, shiftY = (top + bottom - frame.height) / 2
   const width = right - left, height = bottom - top
   return { ...frame, x: center.x + shiftX * cos - shiftY * sin - width / 2, y: center.y + shiftX * sin + shiftY * cos - height / 2, width, height }
 }
 
+export function fitFrameAround<T extends OrientedRect>(frame: T, child: OrientedRect): T {
+  const bounds = frameLocalBounds(frame, child)
+  return frameWithBounds(frame, { left: Math.min(0, bounds.left - 24), right: Math.max(frame.width, bounds.right + 24),
+    top: Math.min(0, bounds.top - 32), bottom: Math.max(frame.height, bounds.bottom + 24) })
+}
+
+export function fitFrameToContents<T extends OrientedRect>(frame: T, children: readonly OrientedRect[]): T {
+  if (!children.length) return frame
+  const first = frameLocalBounds(frame, children[0])
+  const bounds = children.slice(1).reduce((area, child) => {
+    const next = frameLocalBounds(frame, child)
+    return { left: Math.min(area.left, next.left), top: Math.min(area.top, next.top),
+      right: Math.max(area.right, next.right), bottom: Math.max(area.bottom, next.bottom) }
+  }, first)
+  return frameWithBounds(frame, { left: bounds.left - 24, top: bounds.top - 32, right: bounds.right + 24, bottom: bounds.bottom + 24 })
+}
 export function containsPoint(rect: Rect & { rotation: number }, point: Point) {
   const center = rectCenter(rect)
   const angle = rect.rotation * Math.PI / 180

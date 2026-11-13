@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  MAX_ZOOM, MIN_ZOOM, connectionEndpoints, containsPoint, fitFrameAround, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter,
+  MAX_ZOOM, MIN_ZOOM, connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter,
   renderOrigin, rotatedBounds, screenToWorld, snapPoint, transformDescendant, visibleInViewport, worldToScreen, zoomAt,
 } from '../src/features/icanvas/geometry.ts'
 
@@ -99,6 +99,17 @@ test('rotated frames grow around content without moving the child or losing the 
   const repeated = fitFrameAround(grown, child)
   closeTo(repeated.x, grown.x)
   closeTo(repeated.height, grown.height)
+})
+
+test('fit frame to contents trims old expansion and retains rotation without drifting on repeat', () => {
+  const frame = { x: 10, y: 40, width: 590, height: 520, rotation: 37 }
+  const children = [{ x: 70, y: 200, width: 30, height: 70, rotation: 0 }, { x: 200, y: 100, width: 45, height: 82, rotation: -30 }]
+  const fitted = fitFrameToContents(frame, children)
+  assert.equal(fitted.rotation, frame.rotation)
+  assert.ok(fitted.width < frame.width && fitted.height < frame.height)
+  assert.ok(children.every(child => containsPoint(fitted, rectCenter(child))))
+  assert.equal(fitFrameToContents(fitted, children), fitted)
+  assert.equal(fitFrameToContents(frame, []), frame)
 })
 
 test('rotation expands the bounds around the same center', () => {

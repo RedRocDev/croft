@@ -1,3 +1,5 @@
+import type { OrientedRect } from './geometry'
+
 export type Point = { x: number; y: number }
 export type Camera = Point & { zoom: number }
 export type ObjectKind = 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'image' | 'audio' | 'video' | 'file' | 'canvas' | 'frame' | 'group' | 'page'
@@ -8,6 +10,8 @@ export type CanvasObject = Point & {
   hidden: boolean; locked: boolean; name: string; text: string; colour: string; mode: 'direct' | 'card'
   parentId?: string; assetId?: string; targetId?: string; points?: Point[]; strokeWidth?: number
   collapsed?: boolean; caption?: string; border?: boolean; referenceOnly?: boolean
+  /** Frame bounds before automatic growth, in the same world coordinates as the frame. */
+  frameBase?: OrientedRect
 }
 export type CanvasEdge = { id: string; kind: EdgeKind; from: string; to: string; label: string }
 export type PresentationStop = { id: string; name: string; canvasId: string; camera: Camera; duration: number }

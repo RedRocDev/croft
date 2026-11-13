@@ -98,6 +98,12 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
     strokeWidth: optional(data.strokeWidth, (width) => number(width, 0.000001, 1000)),
     collapsed: optional(data.collapsed, boolean), caption: optional(data.caption, (caption) => string(caption, generous ? Infinity : 16_384)),
     border: optional(data.border, boolean), referenceOnly: optional(data.referenceOnly, boolean),
+    frameBase: optional(data.frameBase, (value) => {
+      requireValue(data.kind === 'frame', 'Only frames can have a sizing baseline.')
+      const base = object(value)
+      return { ...readPoint(base, generous), width: number(base.width, generous ? Number.MIN_VALUE : 0.000001, bound),
+        height: number(base.height, generous ? Number.MIN_VALUE : 0.000001, bound), rotation: number(base.rotation, -bound, bound) }
+    }),
   }
 }
 

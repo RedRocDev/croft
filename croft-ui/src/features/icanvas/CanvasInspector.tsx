@@ -21,6 +21,7 @@ interface InspectorProps {
   updateEdge: (edge: CanvasEdge, patch: Partial<CanvasEdge>) => void
   reorder: (id: string, direction: LayerDirection) => void
   moveIntoFrame: (object: CanvasObject, frameId: string) => void
+  fitFrame: (object: CanvasObject) => void
   settings: (patch: Partial<CanvasSettings>) => void
 }
 
@@ -87,12 +88,13 @@ function TextField({ label, value, onCommit, multiline = false, required = false
   </label>
 }
 
-function ObjectProperties({ object, objects, update, reorder, moveIntoFrame }: {
+function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fitFrame }: {
   object: CanvasObject
   objects: ReadonlyMap<string, CanvasObject>
   update: UpdateObject
   reorder: InspectorProps['reorder']
   moveIntoFrame: InspectorProps['moveIntoFrame']
+  fitFrame: InspectorProps['fitFrame']
 }) {
   const parent = object.parentId ? objects.get(object.parentId) : undefined
   const parentLocked = parent ? objectFlags(parent, objects).locked : false
@@ -166,6 +168,8 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame }: {
         <NumberField label="Opacity (%)" value={object.opacity * 100} min={0} max={100}
           onCommit={value => updateNumber('opacity')(value / 100)} />
       </div>
+      {frame && <button type="button" className="ic-button" disabled={object.collapsed || !Array.from(objects.values()).some(item => item.parentId === object.id)}
+        onClick={() => fitFrame(object)}>Fit frame to contents</button>}
     </fieldset>
     <fieldset className="ic-inspector-section" disabled={locked}>
       <legend>Appearance</legend>
@@ -256,7 +260,7 @@ function ObjectLayers({ objects, selected, select, update }: {
   return objects.length ? layers() : <p className="ic-inspector-status">This canvas has no layers yet.</p>
 }
 
-export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, settings }: InspectorProps) {
+export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings }: InspectorProps) {
   const bodyId = useId()
   const panel = project.settings.panel
   if (panel === 'closed') return null
@@ -280,7 +284,7 @@ export function CanvasInspector({ project, selected, activeEdge, select, update,
           <legend>{edge.kind.charAt(0).toUpperCase() + edge.kind.slice(1)}</legend>
           <TextField label="Label" value={edge.label} onCommit={label => updateEdge(edge, { label })} />
         </fieldset> :
-        object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} /> :
+        object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} /> :
         <p className="ic-inspector-status">{selected.length ? selected.length + ' objects selected. Select one object to edit its properties.' : 'Select an object or connection to inspect it.'}</p>}
     </div>
   </aside>

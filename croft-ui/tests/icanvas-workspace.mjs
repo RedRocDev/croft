@@ -22,6 +22,12 @@ const watch = page => {
 const waitCount = (page, selector, count) => page.waitForFunction(({selector,count})=>document.querySelectorAll(selector).length===count,{selector,count})
 const bbox = async locator => { const rect = await locator.boundingBox(); assert.ok(rect); return rect }
 const button = (page,name) => page.getByRole('button',{name,exact:true})
+const itemRect = locator => locator.evaluate(({style}) => ({
+  x: parseFloat(style.left),
+  y: parseFloat(style.top),
+  width: parseFloat(style.width),
+  height: parseFloat(style.height),
+}))
 const dialog = (page,name) => page.getByRole('dialog',{name,exact:true})
 const nav = page => page.getByRole('navigation',{name:'Workspace navigation'})
 const stage = page => page.getByRole('region',{name:'Canvas',exact:true})
@@ -83,6 +89,103 @@ try {
  await inspector(page).getByLabel('Collapse frame',{exact:true}).uncheck()
  await child.waitFor({state:'visible'})
  result('frame detachment/attachment preserves world position and collapse hides only contained objects')
+
+ const originalFrame = await itemRect(frame)
+ const dropPoint = await frame.evaluate(element => {
+   const stage = element.closest('.ic-stage').getBoundingClientRect()
+   const camera = new DOMMatrix(getComputedStyle(element.closest('.ic-world')).transform)
+   const x = parseFloat(element.style.left) + parseFloat(element.style.width) + 76
+   const y = parseFloat(element.style.top) + 26
+   const point = new DOMPoint(x, y).matrixTransform(camera)
+   return { clientX: stage.left + point.x, clientY: stage.top + point.y }
+ })
+ const pngName = 'Frame boundary fixture.png'
+ const transfer = await page.evaluateHandle(async (name) => {
+   const image = document.createElement('canvas')
+   image.width = 64
+   image.height = 48
+   const context = image.getContext('2d')
+   context.fillStyle = '#386e59'
+   context.fillRect(0, 0, 64, 48)
+   context.fillStyle = '#e4c77e'
+   context.fillRect(12, 8, 20, 22)
+   const png = await new Promise(resolve => image.toBlob(resolve, 'image/png'))
+   const files = new DataTransfer()
+   files.items.add(new File([png], name, {type:'image/png'}))
+   return files
+ }, pngName)
+ try {
+   await stage(page).dispatchEvent('drop', {...dropPoint, dataTransfer:transfer})
+   const importDialog = dialog(page,'Add files')
+   await button(importDialog,'Add').click()
+   await importDialog.waitFor({state:'hidden'})
+ } finally { await transfer.dispose() }
+ const importedImage = item(page,pngName)
+ const png = importedImage.getByRole('img',{name:pngName,exact:true})
+ await png.waitFor()
+ assert.deepEqual(await png.evaluate(async image => {
+   await image.decode()
+   return [image.naturalWidth,image.naturalHeight]
+ }),[64,48])
+ const originalImage = await itemRect(importedImage)
+ const imageId = await importedImage.getAttribute('data-testid')
+ assert.ok(originalImage.x > originalFrame.x + originalFrame.width)
+ assert.deepEqual(await itemRect(frame),originalFrame)
+ assert.equal(await container.locator('option:checked').textContent(),'Canvas')
+ await container.selectOption({label:'Travel notes'})
+ const enlargedFrame = await itemRect(frame)
+ assert.ok(enlargedFrame.width > originalFrame.width)
+ assert.ok(enlargedFrame.x + enlargedFrame.width > originalImage.x + originalImage.width)
+ assert.deepEqual(await itemRect(importedImage),originalImage)
+ await container.selectOption({label:'Canvas'})
+ assert.deepEqual(await itemRect(frame),originalFrame)
+ assert.deepEqual(await itemRect(importedImage),originalImage)
+
+ async function selectImportedImage() {
+   await importedImage.click({position:{x:20,y:20}})
+   await container.waitFor()
+ }
+ await button(page,'Undo').click()
+ assert.deepEqual(await itemRect(frame),enlargedFrame)
+ assert.deepEqual(await itemRect(importedImage),originalImage)
+ await selectImportedImage()
+ assert.equal(await container.locator('option:checked').textContent(),'Travel notes')
+ await button(page,'Redo').click()
+ assert.deepEqual(await itemRect(frame),originalFrame)
+ assert.deepEqual(await itemRect(importedImage),originalImage)
+ await selectImportedImage()
+ assert.equal(await container.locator('option:checked').textContent(),'Canvas')
+ await importedImage.focus()
+ await page.keyboard.press('Control+s')
+ await button(page,'Save menu').getByText('Saved',{exact:true}).waitFor()
+ await page.reload({waitUntil:'networkidle'})
+ await png.waitFor()
+ assert.equal(await importedImage.getAttribute('data-testid'),imageId)
+ assert.deepEqual(await itemRect(frame),originalFrame)
+ assert.deepEqual(await itemRect(importedImage),originalImage)
+ await selectImportedImage()
+ assert.equal(await container.locator('option:checked').textContent(),'Canvas')
+ result('detaching an imported PNG keeps its position and refits the frame, including undo, redo and reload')
+
+ await frame.locator('.ic-frame-label').click()
+ const widthField = inspector(page).getByLabel('Width',{exact:true})
+ await widthField.fill(String(originalFrame.width + 160))
+ await widthField.press('Enter')
+ const oversizedFrame = await itemRect(frame)
+ const childBeforeFit = await itemRect(child)
+ assert.ok(oversizedFrame.width > originalFrame.width)
+ await button(inspector(page),'Fit frame to contents').click()
+ const fittedFrame = await itemRect(frame)
+ assert.ok(fittedFrame.width < oversizedFrame.width)
+ assert.ok(fittedFrame.height < oversizedFrame.height)
+ assert.deepEqual(await itemRect(child),childBeforeFit)
+ assert.deepEqual(await itemRect(importedImage),originalImage)
+ await button(page,'Undo').click()
+ assert.deepEqual(await itemRect(frame),oversizedFrame)
+ await button(page,'Undo').click()
+ assert.deepEqual(await itemRect(frame),originalFrame)
+ result('Fit frame to contents repairs an oversized frame without moving its children or detached image')
+
  await frame.focus()
  await page.keyboard.press('Control+f')
  await dialog(page,'Find in canvas').getByRole('textbox',{name:'Search'}).fill('Places')

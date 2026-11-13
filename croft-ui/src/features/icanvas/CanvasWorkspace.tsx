@@ -8,9 +8,9 @@ import {
 import { ancestors, createProject, descendants, edgeLabels, kinds, makeObject, objectFlags, palette,
   type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
 import {
-  connectionEndpoints, containsPoint, fitFrameAround, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter, renderOrigin,
+  connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter, renderOrigin,
   rotatedBounds, screenToWorld, snapPoint, transformDescendant, worldToScreen, zoomAt,
-  type Rect,
+  type OrientedRect, type Rect,
 } from './geometry'
 import { CanvasInspector } from './CanvasInspector'
 import { CanvasThumbnail, ObjectContent } from './CanvasVisuals'
@@ -36,6 +36,13 @@ const isEditor = (target: EventTarget | null) => target instanceof HTMLElement &
 const shapeForAsset = (asset: CanvasAsset): ObjectKind =>
   asset.mime.startsWith('image/') ? 'image' : asset.mime.startsWith('audio/') ? 'audio' : asset.mime.startsWith('video/') ? 'video' : 'file'
 const action = (label: string, run: () => void, icon?: React.ReactNode) => ({ label, run, icon })
+const frameGeometry = ({ x, y, width, height, rotation }: OrientedRect): OrientedRect => ({ x, y, width, height, rotation })
+
+function translateObject(object: CanvasObject, dx: number, dy: number): CanvasObject {
+  const { frameBase } = object
+  return { ...object, x: object.x + dx, y: object.y + dy,
+    frameBase: frameBase && { ...frameBase, x: frameBase.x + dx, y: frameBase.y + dy } }
+}
 
 export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef, toggleSidebar, openCanvas, goHome, openPage, jump, dark }: {
   project: CanvasProject; store: ReturnType<typeof useCanvasProjects>; sidebarOpen: boolean
@@ -215,14 +222,20 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       next.width = object.width * scale
       next.height = object.height * scale
     }
+    if (object.frameBase) {
+      next.frameBase = resizing ? undefined : moving || rotating
+        ? transformDescendant(object.frameBase, object, next, 1) : object.frameBase
+    }
     if (object.kind === 'stroke' && object.points && resizing) {
       next.points = object.points.map(point => ({ x: point.x * next.width / object.width, y: point.y * next.height / object.height }))
     }
     if (!container || !(moving || resizing || rotating)) return [next]
     const members = expandSelection([object.id])
     if (!canTransform(members)) return []
-    return [next, ...project.objects.filter(item => item.id !== object.id && members.has(item.id))
-      .map(item => transformDescendant(item, object, next, scale))]
+    return [next, ...project.objects.filter(item => item.id !== object.id && members.has(item.id)).map(item => ({
+      ...transformDescendant(item, object, next, scale),
+      frameBase: item.frameBase && transformDescendant(item.frameBase, object, next, scale),
+    }))]
   }
 
   function changeObject(object: CanvasObject, patch: Partial<CanvasObject>) {
@@ -273,8 +286,12 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     }
     const ids = new Set(chosen.filter(validForEdit).map(item => item.id))
     if (!ids.size) return
-    edit(project.objects.filter(item => !ids.has(item.id)).map(item => item.parentId && ids.has(item.parentId) ? { ...item, parentId: undefined } : item),
-      project.edges.filter(edge => !ids.has(edge.from) && !ids.has(edge.to)))
+    const formerParents = new Set(chosen.filter(item => ids.has(item.id)).map(item => item.parentId))
+    const remaining = project.objects.filter(item => !ids.has(item.id))
+      .map(item => item.parentId && ids.has(item.parentId) ? { ...item, parentId: undefined } : item)
+    const changes = new Map<string, CanvasObject>()
+    for (const parentId of formerParents) if (parentId) refitFormerFrames(parentId, changes, remaining, ids)
+    edit(remaining.map(item => changes.get(item.id) ?? item), project.edges.filter(edge => !ids.has(edge.from) && !ids.has(edge.to)))
     setSelected([])
   }
 
@@ -312,7 +329,38 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     if (frameId && (!frame || frame.kind !== 'frame' || frame.collapsed || !validForEdit(frame) || expandSelection([object.id]).has(frameId))) return
     const placed = { ...object, parentId: frame?.id }
     const changes = new Map([[object.id, placed]])
+    refitFormerFrames(object.parentId, changes)
     growFrames(placed, changes)
+    edit(project.objects.map(item => changes.get(item.id) ?? item))
+  }
+
+  function frameChildren(frameId: string, changes: Map<string, CanvasObject>, objects = project.objects) {
+    return objects.map(item => changes.get(item.id) ?? item).filter(item => item.parentId === frameId)
+  }
+
+  function refitFormerFrames(parentId: string | undefined, changes: Map<string, CanvasObject>, objects = project.objects,
+    removed?: ReadonlySet<string>) {
+    const seen = new Set<string>()
+    while (parentId && !seen.has(parentId)) {
+      const frame = changes.get(parentId) ?? indexed.map.get(parentId)
+      if (!frame || indexed.flags.get(frame.id)?.locked) break
+      seen.add(frame.id)
+      parentId = frame.parentId
+      if (removed?.has(frame.id) || frame.kind !== 'frame' || frame.collapsed || !frame.frameBase) continue
+      const baseline = { ...frame, ...frame.frameBase }
+      const fitted = frameChildren(frame.id, changes, objects).reduce(fitFrameAround<CanvasObject>, baseline)
+      changes.set(frame.id, fitted === baseline ? { ...baseline, frameBase: undefined } : fitted)
+    }
+  }
+
+  function fitFrame(frame: CanvasObject) {
+    if (!validForEdit(frame) || frame.kind !== 'frame' || frame.collapsed) return
+    const changes = new Map<string, CanvasObject>()
+    const fitted = fitFrameToContents(frame, frameChildren(frame.id, changes))
+    if (fitted === frame && !frame.frameBase) return
+    changes.set(frame.id, { ...fitted, frameBase: undefined })
+    refitFormerFrames(frame.parentId, changes)
+    growFrames(changes.get(frame.id)!, changes)
     edit(project.objects.map(item => changes.get(item.id) ?? item))
   }
 
@@ -323,7 +371,10 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       if (!parent || indexed.flags.get(parent.id)?.locked) break
       seen.add(parent.id)
       child = parent.kind === 'frame' && !parent.collapsed ? fitFrameAround(parent, child) : parent
-      if (child !== parent) changes.set(child.id, child)
+      if (child !== parent) {
+        child = { ...child, frameBase: parent.frameBase ?? frameGeometry(parent) }
+        changes.set(child.id, child)
+      }
     }
   }
 
@@ -506,7 +557,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       }
       const at = worldToScreen(position, camera)
       setGuides(project.settings.guides ? { x: snapped.x ? at.x : undefined, y: snapped.y ? at.y : undefined } : undefined)
-      setDragged(active.objects.map(item => ({ ...item, x: item.x + position.x - source.x, y: item.y + position.y - source.y })))
+      setDragged(active.objects.map(item => translateObject(item, position.x - source.x, position.y - source.y)))
     }
   }
 
@@ -589,9 +640,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         const delta = event.shiftKey ? 10 : 1
         const ids = expandSelection(chosen.filter(validForEdit).map(item => item.id))
         if (!canTransform(ids)) return
-        edit(project.objects.map(item => ids.has(item.id) && !indexed.flags.get(item.id)?.locked ? { ...item,
-          x: item.x + (key === 'arrowright' ? delta : key === 'arrowleft' ? -delta : 0), y: item.y + (key === 'arrowdown' ? delta : key === 'arrowup' ? -delta : 0),
-        } : item))
+        const dx = key === 'arrowright' ? delta : key === 'arrowleft' ? -delta : 0
+        const dy = key === 'arrowdown' ? delta : key === 'arrowup' ? -delta : 0
+        edit(project.objects.map(item => ids.has(item.id) ? translateObject(item, dx, dy) : item))
       }
     }
     const keyup = (event: KeyboardEvent) => { if (event.key === ' ') space.current = false }
@@ -950,7 +1001,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         </div>
         {panelOpen && <div className="ic-inspector-shell" onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge}
           select={id => pick(id)} update={changeObject} updateEdge={(edge, patch) => edit(project.objects, project.edges.map(item => item.id === edge.id ? { ...item, ...patch } : item))}
-          reorder={reorder} moveIntoFrame={moveIntoFrame} settings={updateSettings} /></div>}
+          reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} settings={updateSettings} /></div>}
         {(feedback || error) && <div className="ic-toast" role="status" onPointerDown={event => event.stopPropagation()}>{feedback || error}
           {error && canEdit && <><button onClick={() => void flush().catch(onError)}>Retry</button><button onClick={() => show('export')}>Export current draft</button></>}<button className="ic-icon" aria-label="Dismiss message" onClick={() => setFeedback('')}><X /></button></div>}
       </>}

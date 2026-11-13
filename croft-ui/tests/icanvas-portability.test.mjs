@@ -11,6 +11,9 @@ test('editable package preserves nested canvases, media, edges, and presentation
   const originals = seedProjects()
   const root = originals[0]
   root.camera = { x: -64e12 - 128, y: 64e12 + 128, zoom: 64 }
+  const sourceFrame = root.objects.find(item => item.kind === 'frame')
+  sourceFrame.frameBase = { x: -20, y: 315, width: 520, height: 220, rotation: 0 }
+  sourceFrame.width = 960
   const mediaId = crypto.randomUUID()
   const linkedId = crypto.randomUUID()
   root.coverAssetId = mediaId
@@ -38,6 +41,7 @@ test('editable package preserves nested canvases, media, edges, and presentation
   assert.equal(copy.edges[0].from, note.id)
   const frame = copy.objects.find((item) => item.kind === 'frame')
   assert.equal(copy.objects.find((item) => item.name === 'Getting there').parentId, frame.id)
+  assert.deepEqual(frame.frameBase, sourceFrame.frameBase)
   const importedImage = assets.find((asset) => asset.name === 'pixel.png')
   assert.notEqual(importedImage.id, mediaId)
   assert.equal(copy.coverAssetId, importedImage.id)
