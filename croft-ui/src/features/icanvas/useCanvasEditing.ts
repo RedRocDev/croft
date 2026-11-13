@@ -1,13 +1,15 @@
 import { useRef, useState } from 'react'
-import type { CanvasEdge, CanvasObject, CanvasProject } from './model'
+import type { CanvasEdge, CanvasObject, CanvasProject, ProjectSwatch } from './model'
 import { createHistory, recordHistory, redoHistory, undoHistory, type Change } from './history'
 
-type EditValue = { object: CanvasObject; index: number } | { edge: CanvasEdge; index: number }
+type EditValue = { object: CanvasObject; index: number } | { edge: CanvasEdge; index: number } | { swatches: ProjectSwatch[]; index: number }
+const swatchHistoryId = '\u0000project-swatches'
 
 function entries(project: CanvasProject) {
   return new Map<string, EditValue>([
     ...project.objects.map((object, index): [string, EditValue] => [object.id, { object, index }]),
     ...project.edges.map((edge, index): [string, EditValue] => [edge.id, { edge, index }]),
+    ...(project.swatches ? [[swatchHistoryId, { swatches: project.swatches, index: 0 }] satisfies [string, EditValue]] : []),
   ])
 }
 
@@ -28,6 +30,7 @@ export function useCanvasEditing(project: CanvasProject, update: (project: Canva
       if (previous && current && !moved.has(id)) {
         if ('object' in previous && 'object' in current && previous.object === current.object) continue
         if ('edge' in previous && 'edge' in current && previous.edge === current.edge) continue
+        if ('swatches' in previous && 'swatches' in current && previous.swatches === current.swatches) continue
       }
       changes.push({ id, before: previous ?? null, after: current ?? null })
     }
@@ -42,19 +45,26 @@ export function useCanvasEditing(project: CanvasProject, update: (project: Canva
     if (record(next)) update(next)
   }
 
+  function editSwatches(swatches: ProjectSwatch[]) {
+    const next = { ...project, swatches: swatches.length ? swatches : undefined }
+    if (record(next)) update(next)
+  }
+
   function step(direction: 'undo' | 'redo') {
     const result = (direction === 'undo' ? undoHistory : redoHistory)(history.current)
     if (!result.changes?.length) return
     const touched = new Set(result.changes.map(change => change.id))
     const objects = project.objects.filter(object => !touched.has(object.id))
     const edges = project.edges.filter(edge => !touched.has(edge.id))
+    let swatches = touched.has(swatchHistoryId) ? undefined : project.swatches
     const replacements = result.changes.flatMap(change => change.after ? [change.after] : []).sort((a, b) => a.index - b.index)
     for (const value of replacements) {
       if ('object' in value) objects.splice(value.index, 0, value.object)
-      else edges.splice(value.index, 0, value.edge)
+      else if ('edge' in value) edges.splice(value.index, 0, value.edge)
+      else swatches = value.swatches
     }
     history.current = result.history
-    update({ ...project, objects, edges })
+    update({ ...project, objects, edges, swatches })
     renderHistory(value => value + 1)
   }
 
@@ -62,5 +72,5 @@ export function useCanvasEditing(project: CanvasProject, update: (project: Canva
     history.current = createHistory()
     renderHistory(value => value + 1)
   }
-  return { edit, record, step, resetHistory, canUndo: history.current.past.length > 0, canRedo: history.current.future.length > 0 }
+  return { edit, editSwatches, record, step, resetHistory, canUndo: history.current.past.length > 0, canRedo: history.current.future.length > 0 }
 }

@@ -37,6 +37,7 @@
   animation: ic-card-back-in 160ms ease-out;
 }
 .ic-card-back-marker { display: block; font-size: 10px; font-weight: 640; opacity: .75; }
+.ic-card-back.ic-card-back-with-image { position: absolute; inset: 0 0 auto; z-index: 1; }
 .ic-card-back-title { margin: 3px 0 5px; font-size: 15px; font-weight: 670; }
 .ic-card-back-text { margin: 3px 0; white-space: pre-wrap; }
 .ic-card-back [data-selectable-card-text] { user-select: text; cursor: text; }

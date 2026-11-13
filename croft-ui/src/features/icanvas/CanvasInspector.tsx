@@ -1,12 +1,12 @@
-import { useId, useMemo, useState } from 'react'
+import { useId, useMemo, useState, type ReactNode } from 'react'
 import { ColourPicker } from './ColourPicker'
 import {
   ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronDown, ChevronRight,
   Eye, EyeOff, Layers, Lock, SlidersHorizontal, Unlock, X,
 } from 'lucide-react'
 import {
-  canFlip, cardSide, kinds, objectFlags,
-  type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings,
+  canFlip, cardSide, colourForEdge, kinds, objectFlags,
+  type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type ProjectSwatch,
 } from './model'
 import './inspector.css'
 
@@ -35,6 +35,7 @@ interface InspectorProps extends CardActions {
   moveIntoFrame: (object: CanvasObject, frameId: string) => void
   fitFrame: (object: CanvasObject) => void
   settings: (patch: Partial<CanvasSettings>) => void
+  imageTools?: ReactNode
 }
 
 function NumberField({ label, value, onCommit, min, max }: {
@@ -102,13 +103,15 @@ function TextField({ label, value, onCommit, multiline = false, required = false
 }
 
 function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fitFrame, flipCard, editBack, attachBack,
-  removeBackAttachment, selectStackMember, removeFromStack, setStackFanned, unstack, deleteStack }: CardActions & {
+  removeBackAttachment, selectStackMember, removeFromStack, setStackFanned, unstack, deleteStack, imageTools, swatches }: CardActions & {
   object: CanvasObject
   objects: ReadonlyMap<string, CanvasObject>
   update: UpdateObject
   reorder: InspectorProps['reorder']
   moveIntoFrame: InspectorProps['moveIntoFrame']
   fitFrame: InspectorProps['fitFrame']
+  imageTools?: ReactNode
+  swatches?: ProjectSwatch[]
 }) {
   const parent = object.parentId ? objects.get(object.parentId) : undefined
   const parentLocked = parent ? objectFlags(parent, objects).locked : false
@@ -152,6 +155,7 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
       </button>
     </div>
     {parentLocked && <p className="ic-inspector-status">Locked by a parent layer.</p>}
+    {imageTools}
     {canFlip(object) && (flipCard || editBack) && <fieldset className="ic-inspector-section">
       <legend>Card faces</legend>
       <p className="ic-colour-hint">Showing {side === 'back' ? 'Back' : 'Front'}</p>
@@ -226,7 +230,9 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
     </fieldset>
     <fieldset className="ic-inspector-section" disabled={locked}>
       <legend>Appearance</legend>
-      <ColourPicker colour={object.colour} onChange={colour => update(object, { colour })} />
+      {object.kind === 'text' && object.mode === 'direct'
+        ? <ColourPicker colour={object.textColour ?? '#263029'} swatches={swatches} onChange={textColour => update(object, { textColour })} />
+        : <ColourPicker colour={object.colour} swatches={swatches} onChange={colour => update(object, { colour })} />}
       {object.kind === 'image' && object.mode === 'direct' && <p className="ic-colour-hint">Show border uses this colour around the image.</p>}
       <label className="ic-inspector-check">
         <span>Show border</span>
@@ -318,7 +324,7 @@ function ObjectLayers({ objects, selected, select, update }: {
   return objects.length ? layers() : <p className="ic-inspector-status">This canvas has no layers yet.</p>
 }
 
-export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings, ...cardActions }: InspectorProps) {
+export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings, imageTools, ...cardActions }: InspectorProps) {
   const bodyId = useId()
   const panel = project.settings.panel
   if (panel === 'closed') return null
@@ -341,8 +347,10 @@ export function CanvasInspector({ project, selected, activeEdge, select, update,
         edge ? <fieldset className="ic-inspector-section" key={edge.id}>
           <legend>{edge.kind.charAt(0).toUpperCase() + edge.kind.slice(1)}</legend>
           <TextField label="Label" value={edge.label} onCommit={label => updateEdge(edge, { label })} />
+          <ColourPicker colour={edge.colour ?? colourForEdge[edge.kind]} swatches={project.swatches} onChange={colour => updateEdge(edge, { colour })} />
         </fieldset> :
-        object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} {...cardActions} /> :
+        object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame}
+          imageTools={imageTools} swatches={project.swatches} {...cardActions} /> :
         <p className="ic-inspector-status">{selected.length ? selected.length + ' objects selected. Select one object to edit its properties.' : 'Select an object or connection to inspect it.'}</p>}
     </div>
   </aside>

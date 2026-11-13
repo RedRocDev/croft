@@ -77,6 +77,7 @@
   border: 1px solid #78847566; border-radius: 8px; z-index: 0; color: var(--ink);
 }
 .ic-frame-label { display: flex; align-items: center; gap: 6px; padding: 7px 10px; font-size: 13px; font-weight: 620; }
+.ic-item[data-collapsed="false"] > .ic-frame-label { align-self: flex-start; max-width: 100%; }
 .ic-frame-label small { color: var(--muted); margin-left: auto; }
 .ic-item[data-kind="text"][data-mode="direct"] { color: var(--ink); }
 .ic-item[data-kind="text"] .ic-object-text { font-weight: 690; font-size: 29px; line-height: 1.15; padding: 7px; }
@@ -89,6 +90,10 @@
 span.ic-object-title { display: block; text-align: center; }
 .ic-caption { padding: 2px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ic-item > img, .ic-item > video { flex: 1; min-height: 0; width: 100%; object-fit: contain; border-radius: 5px; }
+.ic-image-slot { position: absolute; }
+.ic-item:has(> .ic-image-slot-front) { justify-content: flex-start; }
+.ic-item:has(> .ic-image-slot-front) > .ic-caption { position: absolute; inset: auto 0 0; min-height: 20px; }
+.ic-item:has(> .ic-image-slot-front) > .ic-object-title, .ic-item:has(> .ic-image-slot-front) > .ic-caption { z-index: 1; }
 .ic-item > audio { margin: 4px 6px; min-width: 0; width: calc(100% - 12px); }
 .ic-item[data-kind="stroke"] > svg { width: 100%; height: 100%; }
 .ic-item[data-selected="true"], .ic-item[data-from="true"] { outline: 2px solid #4e8d73; }
@@ -131,8 +136,8 @@ span.ic-object-title { display: block; text-align: center; }
 .ic-toolbar[data-mode="parked"] { top: 13px; left: 12px; flex-direction: column; }
 .ic-toolbar[data-mode="parked"] .ic-menu { top: 0; left: calc(100% + 7px); right: auto; }
 .ic-toolbar-grip { cursor: grab; color: var(--quiet); width: 22px; min-width: 22px; }
-.ic-quick { z-index: 3; }
-.ic-text-align { display: flex; margin-inline: 3px; padding-inline: 3px; border-inline: 1px solid var(--border); }
+.ic-quick { z-index: 3; flex-wrap: wrap; max-width: calc(100% - 16px); }
+.ic-text-align, .ic-image-shortcuts { display: flex; margin-inline: 3px; padding-inline: 3px; border-inline: 1px solid var(--border); }
 .ic-context-menu { min-width: 168px; }
 .ic-inspector-shell { position: absolute; z-index: 5; top: 63px; right: 12px; max-height: calc(100% - 127px); display: flex; box-shadow: var(--ic-shadow); border-radius: 8px; }
 .ic-zoom { right: 12px; bottom: 12px; z-index: 3; }
@@ -213,7 +218,6 @@ span.ic-object-title { display: block; text-align: center; }
 @media (max-width: 440px) {
   .ic-toolbar .ic-icon { min-width: 27px; padding: 0 4px; }
   .ic-breadcrumbs > span:not(:last-child) { display: none; }
-  .ic-quick { max-width: calc(100% - 16px); }
   .ic-inspector-shell { top: auto; bottom: 53px; max-height: 43%; }
   .ic-minimap, .ic-zoom { bottom: 8px; }
 }

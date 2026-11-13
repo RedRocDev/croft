@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import RBush from 'rbush'
 import {
-  ArrowDownToLine, ArrowRight, Box, ChevronDown, ChevronRight, Circle, Copy, Eye, FileText, GripHorizontal, Hand, Image,
+  ArrowDownToLine, ArrowRight, Box, ChevronDown, ChevronRight, Circle, Copy, Crop, Eye, FileText, GripHorizontal, Hand, Image,
   Layers, Lock, LockOpen, Maximize, Minus, MoreHorizontal, MousePointer2, PanelLeft, PenLine, Play, Plus, Redo2, RotateCw,
-  Save, Search, Square, StickyNote, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, Type, Undo2, Unlink, X,
+  Save, Search, SlidersHorizontal, Sparkles, Square, StickyNote, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, Type, Undo2, Unlink, X,
 } from 'lucide-react'
-import { ancestors, canFlip, cardFace, cardSide, createProject, descendants, edgeLabels, kinds, makeObject, objectFlags, palette, searchCanvasObjects,
+import { ancestors, canFlip, cardFace, cardSide, colourForEdge, createProject, descendants, edgeLabels, imageAssetId, kinds, makeObject, objectFlags, palette, searchCanvasObjects,
   type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type CardSide, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
 import {
   connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, pointerAngle, rectCenter, renderOrigin,
@@ -20,6 +20,9 @@ import { CanvasDialog, ProjectDetails, ProjectIcon } from './ProjectViews'
 import { CanvasSaveDialogs } from './CanvasSaveDialogs'
 import { CanvasBackupDialog } from './CanvasBackupDialog'
 import { CanvasExportDialog } from './CanvasExportDialog'
+import { ImageTools } from './ImageTools'
+import { defaultImageEdits, imageEffectInsets, imageFrameSize, readImageEdits, type ImageEdits } from './imageEdits'
+import { getAsset } from './storage'
 import { droppedCanvasFiles, ImportDialog, pickCanvasFiles, type CanvasFile, type CanvasPreparedAsset } from './ImportDialog'
 import { useCanvasEditing } from './useCanvasEditing'
 import { addToStack, canAddToStack, canStackCards, createStack, extractFromStack, layoutStacks, setStackLayout, showStackMember, unstackAll } from './stackScene'
@@ -35,7 +38,6 @@ type Gesture = { start: Point; camera: Camera; pointerId: number } & (
   { kind: 'pan' | 'marquee' } | { kind: 'move'; objects: CanvasObject[]; pickup?: CanvasObject; drop?: string; preview: CanvasObject[] } |
   { kind: 'resize'; object: CanvasObject; excluded: Set<string>; preview: CanvasObject[] } | { kind: 'stroke'; points: Point[] } |
   { kind: 'rotate'; object: CanvasObject; center: Point; lastAngle: number; traveled: number; preview: CanvasObject[] })
-const colourForEdge = { direction: '#537e67', connection: '#858783', relationship: '#8266a3' }
 const isEditor = (target: EventTarget | null) => target instanceof HTMLElement &&
   !!target.closest('input, textarea, select, [contenteditable], [role="dialog"], dialog')
 const shapeForAsset = (asset: CanvasAsset): ObjectKind =>
@@ -48,6 +50,13 @@ const textAlignments = [
   { value: 'center', label: 'Align text center', icon: TextAlignCenter },
   { value: 'right', label: 'Align text right', icon: TextAlignEnd },
 ] as const
+const imageShortcuts = [
+  { section: 'crop', label: 'Crop', icon: Crop },
+  { section: 'adjust', label: 'Adjust', icon: SlidersHorizontal },
+  { section: 'effects', label: 'Effects', icon: Sparkles },
+] as const
+type ImageShortcut = typeof imageShortcuts[number]['section']
+const neutralImageEdits = JSON.stringify(defaultImageEdits)
 const frameGeometry = ({ x, y, width, height, rotation }: OrientedRect): OrientedRect => ({ x, y, width, height, rotation })
 
 function translateObject(object: CanvasObject, dx: number, dy: number): CanvasObject {
@@ -64,7 +73,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
 }) {
   const { projects, update, write, flush, refresh, status, error } = store
   const canEdit = store.access === 'writer'
-  const { edit, record, step, canUndo, canRedo, resetHistory } = useCanvasEditing(project, update)
+  const { edit, editSwatches, record, step, canUndo, canRedo, resetHistory } = useCanvasEditing(project, update)
   const stage = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const toolbar = useRef<HTMLDivElement>(null)
@@ -93,6 +102,10 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const [toolbarDraft, setToolbarDraft] = useState<Point>()
   const [editing, setEditing] = useState<CanvasObject>()
   const [editingBack, setEditingBack] = useState<string>()
+  const [imageSection, setImageSection] = useState<{ key: string; section: ImageShortcut; tick: number }>()
+  const [imageDraft, setImageDraft] = useState<{ key: string; edits: ImageEdits }>()
+  const [compareImage, setCompareImage] = useState<string>()
+  const [backAsset, setBackAsset] = useState<{ id: string; image: boolean }>()
   const [files, setFiles] = useState<CanvasFile[]>()
   const [replaceId, setReplaceId] = useState('')
   const [replaceSide, setReplaceSide] = useState<CardSide>('front')
@@ -150,8 +163,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const tree = new RBush<Indexed>()
     tree.load(visible.map(object => {
       const box = rotatedBounds(object.collapsed ? { ...object, height: 36 } : object, object.rotation)
+      const loadedEdits = imageAssetId(object) && cardFace(object).imageEdits
+      const insets = loadedEdits && imageEffectInsets(loadedEdits)
+      const padding = insets ? Math.max(insets.left, insets.right, insets.top, insets.bottom) * Math.SQRT2 : 0
       const layer = object.parentId && pileLayout.piles.has(object.parentId) ? object.parentId : object.id
-      return { minX: box.left, minY: box.top, maxX: box.right, maxY: box.bottom, object, index: order.get(layer) ?? 0 }
+      return { minX: box.left - padding, minY: box.top - padding, maxX: box.right + padding, maxY: box.bottom + padding, object, index: order.get(layer) ?? 0 }
     }))
     return { map, flags, visible, tree, pileLayout }
   }, [readerObjects])
@@ -175,6 +191,27 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const object = indexed.map.get(id)
     return object && !indexed.flags.get(id)?.hidden ? [object] : []
   })
+  const singleSelection = chosen.length === 1 ? chosen[0] : undefined
+  const imageSide = singleSelection ? cardSide(singleSelection) : 'front'
+  const candidate = singleSelection && imageAssetId(singleSelection)
+  const backAssetId = imageSide === 'back' ? candidate : undefined
+  useEffect(() => {
+    if (!backAssetId) return
+    let active = true
+    void getAsset(backAssetId).then(asset => {
+      if (active) setBackAsset({ id: backAssetId, image: !!asset?.mime.startsWith('image/') })
+    }).catch(() => {
+      if (active) setBackAsset({ id: backAssetId, image: false })
+    })
+    return () => { active = false }
+  }, [backAssetId])
+  const image = candidate && (imageSide === 'front' || backAsset?.id === candidate && backAsset.image || !!singleSelection?.back?.imageEdits) ? candidate : undefined
+  const imageKey = image && singleSelection ? `${singleSelection.id}/${imageSide}/${image}` : undefined
+  useEffect(() => {
+    setImageDraft(undefined)
+    setCompareImage(undefined)
+    setImageSection(current => current?.key === imageKey ? current : undefined)
+  }, [imageKey, settings.panel])
   const selectedGroup = canEdit && !play && chosen.length === 1 && chosen[0].kind === 'group' ? dragMap.get(chosen[0].id) ?? chosen[0] : undefined
   const rotateTarget = canEdit && !play && tool === 'select' && chosen.length === 1 && chosen[0].id === rotateId &&
     !chosen[0].collapsed && !indexed.flags.get(rotateId)?.locked ? projected(chosen[0]) : undefined
@@ -382,6 +419,19 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     }
     const next = new Map(transformObjects(object, patch).map(item => [item.id, item]))
     if (next.size) edit(project.objects.map(item => next.get(item.id) ?? item))
+  }
+
+  function commitImageEdits(id: string, side: CardSide, asset: string, draft?: ImageEdits) {
+    setImageDraft(undefined)
+    const object = project.objects.find(item => item.id === id)
+    if (!object || !validForEdit(object) || imageAssetId(object, side) !== asset) return
+    const previous = cardFace(object, side)
+    try {
+      const parsed = draft ? readImageEdits(draft) : undefined
+      const imageEdits = JSON.stringify(parsed) === neutralImageEdits ? undefined : parsed
+      if (JSON.stringify(previous.imageEdits) === JSON.stringify(imageEdits)) return
+      changeObject(object, side === 'front' ? { imageEdits } : { back: { ...previous, imageEdits } })
+    } catch (reason) { onError(reason) }
   }
 
   function canTransform(ids: Set<string>) {
@@ -959,6 +1009,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     if (replaceId && replaceSide === 'back') {
       const object = indexed.map.get(replaceId)
       if (!object || !validForEdit(object) || !canFlip(object) || assets.length !== 1) throw new Error('Choose one attachment for an editable card.')
+      if (object.back?.imageEdits && !assets[0].mime.startsWith('image/')) throw new Error('Choose an image to keep these edits, or reset the Back image edits before replacing it.')
       const back = { ...cardFace(object, 'back'), assetId: assets[0].id }
       const next = { ...project, objects: project.objects.map(item => item.id === replaceId ? { ...item, back } : item), updatedAt: Date.now() }
       await write([next], assets)
@@ -967,6 +1018,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     }
     const begin = screenToWorld(pointer.current.x ? pointer.current : { x: size.width * .47, y: size.height * .43 }, camera)
     const origin = placement === 'smart' ? placePoint(begin, placement) : begin
+    if (replaceId && indexed.map.get(replaceId)?.imageEdits && !assets[0].mime.startsWith('image/')) throw new Error('Choose an image to keep these edits.')
     const edited = replaceId ? project.objects.map(object => object.id === replaceId ? { ...object, assetId: assets[0].id } : object) : project.objects
     const added: CanvasObject[] = []
     if (!replaceId) {
@@ -1053,12 +1105,37 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const tools = [{ id: 'select', name: 'Select', icon: MousePointer2 }, { id: 'hand', name: 'Hand', icon: Hand },
     { id: 'text', name: 'Text', icon: Type }, { id: 'note', name: 'Sticky note', icon: StickyNote }, { id: 'stroke', name: 'Draw', icon: PenLine }] as const
   const currentColour = chosen.length === 1 && chosen[0].mode === 'card' ? chosen[0].colour : undefined
-  const singleSelection = chosen.length === 1 ? chosen[0] : undefined
   const textSelection = singleSelection && (singleSelection.kind === 'text' || singleSelection.kind === 'note' ||
     cardSide(singleSelection) === 'back') ? singleSelection : undefined
   const alignment = textSelection?.textAlign ?? 'left'
-  const quickWidth = (rotateTarget ? 255 : 225) + (textSelection ? 104 : 0)
+  const quickWidth = (rotateTarget ? 255 : 225) + (textSelection ? 104 : 0) + (imageKey ? 98 : 0)
   const showQuick = canEdit && !selectedStack && !!quick && !play && !dragged.length && !marquee && chosen.some(item => renderedIds.has(item.id) || item.kind === 'group')
+  const quickLeft = Math.max(8, Math.min(size.width - quickWidth, quick?.x ?? 0))
+  let quickTop = quick ? selectedMember && quick.y - quickOffset < 58 ? Math.max(94, quick.y + 14) : Math.max(58, quick.y - quickOffset) : 58
+  if (showQuick && quick) {
+    const toolbarHeight = size.width < 370 && imageKey && textSelection ? 72 : 40
+    for (const frame of rendered) {
+      if (frame.kind !== 'frame' || selected.includes(frame.id)) continue
+      const labelRect = { x: frame.x, y: frame.y, width: frame.collapsed ? frame.width : Math.min(frame.width, frame.name.length * 8 + 36), height: 36, rotation: 0 }
+      const labelFrame = frame.collapsed ? { ...frame, height: 36 } : frame
+      const rotatedLabel = transformDescendant(labelRect, { ...labelFrame, rotation: 0 }, labelFrame, 1)
+      const label = rotatedBounds(rotatedLabel, rotatedLabel.rotation)
+      const start = worldToScreen({ x: label.left, y: label.top }, camera)
+      const end = worldToScreen({ x: label.right, y: label.bottom }, camera)
+      if (quickLeft < end.x && quickLeft + quickWidth > start.x && quickTop < end.y && quickTop + toolbarHeight > start.y) {
+        quickTop = start.y - toolbarHeight - 4 >= 58 ? start.y - toolbarHeight - 4 : Math.min(size.height - toolbarHeight - 8, end.y + 4)
+      }
+    }
+  }
+  const imageInspector = image && imageKey && singleSelection ? <ImageTools key={imageKey} assetId={image}
+    {...imageFrameSize(singleSelection, imageSide)} edits={cardFace(singleSelection).imageEdits}
+    sectionRequest={imageSection?.key === imageKey ? imageSection : undefined}
+    disabled={!validForEdit(singleSelection)} swatches={project.swatches ?? []}
+    onPreview={edits => setImageDraft(edits ? { key: imageKey, edits } : undefined)}
+    onCommit={edits => commitImageEdits(singleSelection.id, imageSide, image, edits)}
+    onCompare={active => setCompareImage(active ? imageKey : undefined)}
+    onSwatches={swatches => { if (canEdit && validForEdit(singleSelection)) editSwatches(swatches) }}
+    onRelink={() => void addFiles(singleSelection.id, imageSide)} /> : undefined
 
   return <section className="ic-workspace" data-presentation={!!play}>
     {!play && <header className="ic-header">
@@ -1139,6 +1216,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           const isBack = cardSide(object) === 'back'
           const isMember = !!object.parentId && !!indexed.map.get(object.parentId)?.stack
           const atThumbnailScale = Math.max(object.width, object.height) * camera.zoom < 18 && !picked
+          const mediaAsset = imageAssetId(object)
+          const mediaKey = !play && mediaAsset ? `${object.id}/${cardSide(object)}/${mediaAsset}` : undefined
           return <div key={object.id} className="ic-item" data-kind={object.kind} data-mode={object.mode} data-selected={picked}
             data-card-side={canFlip(object) ? cardSide(object) : undefined} data-stack-member={isMember || undefined}
             data-collapsed={!!object.collapsed} data-border={!!object.border} data-from={fromId === object.id}
@@ -1165,7 +1244,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
             {atThumbnailScale ? <div className="ic-item-swatch" /> : object.kind === 'frame' ? <span className="ic-frame-label"><Box size={14} /> {object.name}{object.collapsed && <small>{project.objects.filter(item => item.parentId === object.id).length} items</small>}</span> : <>
               {!isBack && card && !['canvas', 'page', 'file', 'note'].includes(object.kind) && <span className="ic-object-title">{object.name}</span>}
               <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit && !locked}
-                replace={() => void addFiles(object.id)} replaceBack={() => void addFiles(object.id, 'back')} />
+                replace={() => void addFiles(object.id)} replaceBack={() => void addFiles(object.id, 'back')}
+                imageDraft={mediaKey && mediaKey === imageKey && imageDraft?.key === mediaKey ? imageDraft.edits : undefined}
+                compareImage={!!mediaKey && mediaKey === imageKey && compareImage === mediaKey} />
               {!isBack && card && object.caption && <small className="ic-caption">{object.caption}</small>}
             </>}
             {!play && !atThumbnailScale && canFlip(object) && <CardFlipControl object={object} flipCard={flipCard} />}
@@ -1182,7 +1263,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
               onPointerDown={event => { event.stopPropagation(); start(event, selectedGroup, 'resize') }} />}
         </div>}
         <svg className="ic-edge-layer" width="1" height="1" aria-label="Canvas connections">
-          <defs><marker id="ic-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill={colourForEdge.direction} /></marker></defs>
+          <defs><marker id="ic-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke" /></marker></defs>
           {stageProject.edges.map(edge => {
             const from = dragMap.get(edge.from) ?? indexed.map.get(edge.from)
             const to = dragMap.get(edge.to) ?? indexed.map.get(edge.to)
@@ -1196,7 +1277,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
               if (!play) { event.stopPropagation(); setEdgeId(edge.id); setSelected([]) }
             }}>
               <line className="ic-edge-hit" x1={ends.from.x} y1={ends.from.y} x2={ends.to.x} y2={ends.to.y} stroke="transparent" strokeWidth={14 / camera.zoom} />
-              <line x1={ends.from.x} y1={ends.from.y} x2={ends.to.x} y2={ends.to.y} stroke={colourForEdge[edge.kind]}
+              <line x1={ends.from.x} y1={ends.from.y} x2={ends.to.x} y2={ends.to.y} stroke={edge.colour ?? colourForEdge[edge.kind]}
                 strokeWidth={edge.id === edgeId ? 3 : 2} strokeDasharray={edge.kind === 'relationship' ? '5 5' : undefined} markerEnd={edge.kind === 'direction' ? 'url(#ic-arrow)' : undefined} />
               {edge.label && <text x={(ends.from.x + ends.to.x) / 2} y={(ends.from.y + ends.to.y) / 2 - 7} textAnchor="middle">{edge.label}</text>}
             </g>
@@ -1329,8 +1410,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           </div>
         </div>}
         {showQuick && quick && <div className="ic-quick" role="toolbar" aria-label="Selection actions" onPointerDown={event => event.stopPropagation()}
-          style={{ left: Math.max(8, Math.min(size.width - quickWidth, quick.x)),
-            top: selectedMember && quick.y - quickOffset < 58 ? Math.max(94, quick.y + 14) : Math.max(58, quick.y - quickOffset) }}>
+          style={{ left: quickLeft, top: quickTop }}>
           {chosen.length === 1 && <>
             {['canvas', 'page'].includes(chosen[0].kind) && <button className="ic-icon" aria-label="Quick Preview" title="Quick Preview" onClick={() => previewObject(chosen[0])}><Eye /></button>}
             {chosen[0].kind === 'group' ? <button className="ic-icon" aria-label="Ungroup" title="Ungroup" onClick={() => ungroup(chosen[0])}><Unlink /></button> :
@@ -1361,6 +1441,14 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
             {textAlignments.map(({ value, label, icon: Icon }) => <button key={value} type="button" className="ic-icon" title={label}
               aria-label={label} aria-pressed={alignment === value} disabled={selectionLocked}
               onClick={() => { if (alignment !== value) changeObject(textSelection, { textAlign: value === 'left' ? undefined : value }) }}><Icon /></button>)}
+          </div>}
+          {imageKey && <div className="ic-image-shortcuts" role="group" aria-label="Image shortcuts"
+            onKeyDown={event => { if (event.key === ' ') event.stopPropagation() }}>
+            {imageShortcuts.map(({ section, label, icon: Icon }) => <button key={section} type="button" className="ic-icon"
+              title={label} aria-label={label} onClick={() => {
+                updateSettings({ panel: 'properties' })
+                setImageSection(previous => ({ key: imageKey, section, tick: (previous?.tick ?? 0) + 1 }))
+              }}><Icon /></button>)}
           </div>}
           <button className="ic-icon" aria-label="Duplicate" title="Duplicate" onClick={duplicate}><Copy /></button>
           <button className="ic-icon" aria-label="Delete selected" title="Delete selected" onClick={removeSelection}><Trash2 /></button>
@@ -1396,7 +1484,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           <button className="ic-icon" aria-label="Zoom in" onClick={() => zoom(camera.zoom * 1.25)}><Plus /></button>
           <button className="ic-icon" aria-label="Fit All" title="Fit All" onClick={() => fit()}><Maximize /></button>
         </div>
-        {panelOpen && <div className="ic-inspector-shell" onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge}
+        {panelOpen && <div className="ic-inspector-shell" data-card-scroll onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge} imageTools={imageInspector}
           select={id => {
             const object = indexed.map.get(id)
             if (object && object.parentId && indexed.map.get(object.parentId)?.stack) revealCard(object)
@@ -1404,7 +1492,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           }} update={changeObject} updateEdge={(edge, patch) => edit(project.objects, project.edges.map(item => item.id === edge.id ? { ...item, ...patch } : item))}
           reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} settings={updateSettings} flipCard={flipCard}
           editBack={object => { if (validForEdit(object)) setEditingBack(object.id) }} attachBack={object => void addFiles(object.id, 'back')}
-          removeBackAttachment={object => changeObject(object, { back: { ...cardFace(object, 'back'), assetId: undefined } })}
+          removeBackAttachment={object => changeObject(object, { back: { ...cardFace(object, 'back'), assetId: undefined, imageEdits: undefined } })}
           selectStackMember={(_, member) => revealCard(member)} removeFromStack={removeFromStack} setStackFanned={changeStackLayout}
           unstack={object => stackAction(() => unstackAll(project.objects, object.id), object.stack?.order[0])}
           deleteStack={object => { setStackToDelete(object.id); show('deleteStack') }} /></div>}

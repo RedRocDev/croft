@@ -1,5 +1,6 @@
 import { objectAssetIds, type CanvasAsset, type CanvasProject } from './model.ts'
 import { assertStackMembership } from './stackPersistence.ts'
+import { assertCanvasImageMetadata, assertEditedImageAsset, editedImageAssetIds } from './imagePersistence.ts'
 import { requireWorkspaceWriter } from './writerLock.ts'
 
 export type { CanvasAsset } from './model'
@@ -167,6 +168,7 @@ function validateProject(project: CanvasProject) {
     throw new Error('The canvas contains duplicate edge or presentation stop IDs.')
   }
   assertStackMembership(project.objects)
+  assertCanvasImageMetadata(project)
 }
 
 function validateHierarchy(projects: Map<string, CanvasProject>, changed: CanvasProject[]) {
@@ -227,6 +229,7 @@ async function checkAssetReferences(
       throw new Error('An attachment required by this change is missing. Add it again and retry.')
     }
   }
+  for (const id of editedImageAssetIds(changed)) assertEditedImageAsset(await result(assetStore.get(id)))
 }
 
 function validateAsset(asset: CanvasAsset) {
@@ -303,10 +306,11 @@ export function restoreWorkspaceStorageState(
     }
     const content = [...state.projects, ...snapshots.map(entry => entry.project), ...state.versions.flatMap(version => version.descendants)]
     content.forEach(validateProject)
-    const assetIds = new Set(state.assets.map(asset => asset.id))
-    if ([...referencedAssetIds(content)].some(id => !assetIds.has(id))) {
+    const assets = new Map(state.assets.map(asset => [asset.id, asset]))
+    if ([...referencedAssetIds(content)].some(id => !assets.has(id))) {
       throw new Error('The workspace backup is missing an attachment record.')
     }
+    for (const id of editedImageAssetIds(content)) assertEditedImageAsset(assets.get(id))
     for (const asset of state.assets) {
       validateAsset(asset)
       await result(tx.objectStore(stores.assets).add(asset))

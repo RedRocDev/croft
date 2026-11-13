@@ -2,8 +2,12 @@ import { zipSync } from 'fflate'
 import { GRID_SPACING, rotatedBounds } from './geometry.ts'
 import { readableInk } from './colour.ts'
 import { cardFace, cardSide, objectAssetIds, objectFlags, type CanvasAsset, type CanvasProject, type CanvasObject, type CanvasSettings, type TextAlignment } from './model.ts'
-import { assertStackMembership, containsCardExtensions } from './stackPersistence.ts'
+import { assertStackMembership } from './stackPersistence.ts'
 import { layoutStacks } from './stackScene.ts'
+import { assertCanvasImageMetadata, assertEditedImageAsset, canvasFormatVersion, editedImageAssetIds, readProjectSwatches, type CanvasFormatVersion } from './imagePersistence.ts'
+import { imageEffectInsets, imageFrameSize, readImageEdits, type ImageEdits } from './imageEdits.ts'
+import { loadImage, renderEditedImage } from './imageRendering.ts'
+import { readLinkedFile } from './linkedFiles.ts'
 
 export type CanvasExportFormat = 'croft' | 'zip' | 'svg' | 'png' | 'jpg' | 'pdf'
 export type CanvasExportOptions = {
@@ -14,10 +18,11 @@ export type CanvasExportOptions = {
 }
 
 type AssetEntry = { id: string; name: string; mime: string; size: number; path?: string; sha256?: string; linked?: boolean }
-type Manifest = { format: 'croft-icanvas'; version: 1 | 2; projects: CanvasProject[]; assets: AssetEntry[] }
+type Manifest = { format: 'croft-icanvas'; version: CanvasFormatVersion; projects: CanvasProject[]; assets: AssetEntry[] }
 type JsonObject = Record<string, unknown>
 
 const limit = { package: 120 * 1024 ** 2, manifest: 8 * 1024 ** 2, asset: 40 * 1024 ** 2, projects: 1000, objects: 25000, assets: 2000 }
+export const visualExportLimits = { sourceBytes: 16 * 1024 ** 2, imageMarkup: 48 * 1024 ** 2, editedSide: 1600, canvasSide: 4096, canvasPixels: 12_000_000 }
 const objectKinds = ['text', 'note', 'rectangle', 'ellipse', 'stroke', 'image', 'audio', 'video', 'file', 'canvas', 'frame', 'group', 'page', 'stack'] as const
 const assetPath = /^assets\/[0-9]{5}\.bin$/
 const activeFileName = /\.(?:app|bat|cmd|com|cpl|dll|exe|hta|html?|jar|js|jse|lnk|msi|msp|pif|ps1|reg|scf|scr|svgz?|url|vb[es]?|ws[fh]|xhtml|xml)(?:\s|\.)*$/i
@@ -92,8 +97,12 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
   const bound = generous ? Number.MAX_VALUE : 1e9
   const back = optional(data.back, value => {
     const face = object(value)
-    return { title: string(face.title, generous ? Infinity : 512), text: string(face.text, generous ? Infinity : 200_000), assetId: optional(face.assetId, id) }
+    const imageEdits = optional(face.imageEdits, readImageEdits)
+    return { title: string(face.title, generous ? Infinity : 512), text: string(face.text, generous ? Infinity : 200_000), assetId: optional(face.assetId, id),
+      ...(imageEdits && { imageEdits }) }
   })
+  const imageEdits = optional(data.imageEdits, readImageEdits)
+  const textColour = optional(data.textColour, readColour)
   const visibleSide = optional(data.visibleSide, side => oneOf(side, ['front', 'back']))
   const textAlign = optional(data.textAlign, alignment => oneOf(alignment, ['left', 'center', 'right']))
   const stack = optional(data.stack, value => {
@@ -112,6 +121,8 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
     collapsed: optional(data.collapsed, boolean), caption: optional(data.caption, (caption) => string(caption, generous ? Infinity : 16_384)),
     border: optional(data.border, boolean), referenceOnly: optional(data.referenceOnly, boolean),
     ...(back && { back }),
+    ...(imageEdits && { imageEdits }),
+    ...(textColour && { textColour }),
     ...(visibleSide && { visibleSide }),
     ...(textAlign && { textAlign }),
     ...(stack && { stack }),
@@ -140,22 +151,28 @@ export function readProject(value: unknown, workspaceMaxItems?: number): CanvasP
   const data = object(value)
   const workspace = workspaceMaxItems !== undefined
   const maxItems = workspaceMaxItems ?? limit.objects
-  return {
+  const swatches = optional(data.swatches, readProjectSwatches)
+  const project: CanvasProject = {
     id: id(data.id), parentId: data.parentId === null ? null : id(data.parentId),
     name: string(data.name), description: string(data.description, 16_384), icon: string(data.icon, 32),
     coverAssetId: optional(data.coverAssetId, id), iconAssetId: optional(data.iconAssetId, id),
     trashedAt: optional(data.trashedAt, (value) => number(value, 0, 8.64e15)), createdAt: number(data.createdAt, 0, 8.64e15),
     updatedAt: number(data.updatedAt, 0, 8.64e15), camera: readCamera(data.camera, workspace), settings: readSettings(data.settings),
+    ...(swatches && { swatches }),
     objects: list(data.objects, maxItems).map(item => readObject(item, workspace, maxItems)),
     edges: list(data.edges, maxItems).map((value) => {
       const edge = object(value)
-      return { id: id(edge.id), kind: oneOf(edge.kind, ['direction', 'connection', 'relationship']), from: id(edge.from), to: id(edge.to), label: string(edge.label, workspace ? Infinity : 4096) }
+      const colour = optional(edge.colour, readColour)
+      return { id: id(edge.id), kind: oneOf(edge.kind, ['direction', 'connection', 'relationship']), from: id(edge.from), to: id(edge.to),
+        label: string(edge.label, workspace ? Infinity : 4096), ...(colour && { colour }) }
     }),
     stops: list(data.stops, workspace ? maxItems : 10_000).map((value) => {
       const stop = object(value)
       return { id: id(stop.id), name: string(stop.name, workspace ? Infinity : 512), canvasId: id(stop.canvasId), camera: readCamera(stop.camera, workspace), duration: number(stop.duration, 0, 86400000) }
     }),
   }
+  assertCanvasImageMetadata(project)
+  return project
 }
 
 function readAsset(value: unknown): AssetEntry {
@@ -199,13 +216,19 @@ function checkHierarchy(rows: Map<string, { id: string; parentId?: string | null
 function readManifest(bytes: Uint8Array): Manifest {
   requireValue(bytes.byteLength <= limit.manifest, 'Package manifest is too large.')
   const data = object(JSON.parse(decoder.decode(bytes)) as unknown)
-  requireValue(data.format === 'croft-icanvas' && (data.version === 1 || data.version === 2), 'Unsupported Croft package format or version.')
+  requireValue(data.format === 'croft-icanvas' && (data.version === 1 || data.version === 2 || data.version === 3), 'Unsupported Croft package format or version.')
   const projects = list(data.projects, limit.projects).map((entry) => readProject(entry))
-  requireValue(data.version === 2 || !containsCardExtensions(projects), 'Cards and stacks require a version 2 Croft package.')
+  const neededVersion = canvasFormatVersion(projects)
+  requireValue(data.version >= neededVersion, `This content requires a version ${neededVersion} Croft package.`)
   const assets = list(data.assets, limit.assets).map(readAsset)
   requireValue(projects.length > 0 && projects.reduce((total, project) => total + project.objects.length, 0) <= limit.objects, 'Package has no canvases or too many objects.')
   const projectMap = registry(projects)
   const assetMap = registry(assets)
+  for (const id of editedImageAssetIds(projects)) {
+    const asset = assetMap.get(id)
+    if (asset?.path && asset.mime === 'application/octet-stream') throw new Error('Edited image source data do not match a supported raster image.')
+    assertEditedImageAsset(asset)
+  }
   checkHierarchy(projectMap)
   for (const project of projects) {
     const objectMap = registry(project.objects)
@@ -315,6 +338,7 @@ export async function importProject(file: Blob): Promise<{ projects: CanvasProje
   requireValue(files.size === expectedFiles, 'Archive entries do not match the manifest.')
   const assetIds = new Map<string, string>()
   const assets: CanvasAsset[] = []
+  const editedIds = editedImageAssetIds(manifest.projects)
   for (const entry of manifest.assets) {
     const assetId = crypto.randomUUID()
     assetIds.set(entry.id, assetId)
@@ -326,7 +350,9 @@ export async function importProject(file: Blob): Promise<{ projects: CanvasProje
     const fileBytes = files.get(entry.path)
     requireValue(fileBytes && fileBytes.byteLength === size && await hash(fileBytes) === entry.sha256, 'Asset is missing or failed its checksum.')
     const type = safeMime(mime, fileBytes)
-    assets.push({ id: assetId, name, mime: type, size, blob: new Blob([cloneBytes(fileBytes)], { type }) })
+    const asset = { id: assetId, name, mime: type, size, blob: new Blob([cloneBytes(fileBytes)], { type }) }
+    if (editedIds.has(entry.id)) assertEditedImageAsset(asset)
+    assets.push(asset)
   }
   const projectIds = new Map(manifest.projects.map((project) => [project.id, crypto.randomUUID()]))
   const projects = manifest.projects.map((project): CanvasProject => {
@@ -436,7 +462,7 @@ export async function makeProjectPackage(projects: readonly CanvasProject[], pro
       manifestAssets.push({ ...manifestAsset, mime: safeMime(manifestAsset.mime, bytes), size, path, sha256: await hash(bytes) })
     } else manifestAssets.push({ ...manifestAsset, linked: Boolean(asset?.handle || asset?.linked) || undefined })
   }
-  const manifest: Manifest = { format: 'croft-icanvas', version: containsCardExtensions(portableProjects) ? 2 : 1, projects: portableProjects, assets: manifestAssets }
+  const manifest: Manifest = { format: 'croft-icanvas', version: canvasFormatVersion(portableProjects), projects: portableProjects, assets: manifestAssets }
   const raw = encoder.encode(JSON.stringify(manifest, null, 2))
   readManifest(raw)
   files['manifest.json'] = raw
@@ -494,7 +520,7 @@ function backTextSvg(title: string, body: string, width: number, height: number,
 }
 
 async function embedImage(asset: CanvasAsset | undefined) {
-  if (!asset?.blob || asset.blob.size > 16 * 1024 ** 2) return null
+  if (!asset?.blob || asset.blob.size > visualExportLimits.sourceBytes) return null
   const bytes = new Uint8Array(await asset.blob.arrayBuffer())
   const mime = rasterMime(bytes)
   if (!mime) return null
@@ -503,20 +529,86 @@ async function embedImage(asset: CanvasAsset | undefined) {
   return `data:${mime};base64,${btoa(chunks.join(''))}`
 }
 
-export async function renderProjectSvg(project: CanvasProject, options: CanvasExportOptions = {}, assets: readonly CanvasAsset[] = []) {
-  const byId = new Map(project.objects.map((item) => [item.id, item]))
+function visibleScene(project: CanvasProject) {
+  const byId = new Map(project.objects.map(item => [item.id, item]))
   const stacks = layoutStacks(project.objects)
-  const eligible = project.objects.filter((item) => !objectFlags(item, byId).hidden)
+  const eligible = project.objects.filter(item => !objectFlags(item, byId).hidden)
   const shown = new Set(eligible.map(item => item.id))
   const visible = eligible.filter(item => item.kind !== 'stack' && !stacks.obscured.has(item.id)).map(item => stacks.cards.get(item.id) ?? item)
+  return { byId, stacks, shown, visible }
+}
+
+function visibleImageEdit(item: CanvasObject) {
+  return cardSide(item) === 'back' ? item.back?.imageEdits : item.imageEdits
+}
+
+export function editedVisualImageInventory(projects: readonly CanvasProject[], root: CanvasProject, options: CanvasExportOptions, assets: readonly CanvasAsset[]) {
+  const byId = new Map(assets.map(asset => [asset.id, asset]))
+  return scopeProjects(projects, root, options).flatMap(project => visibleScene(project).visible.flatMap(item => {
+    const edits = visibleImageEdit(item)
+    const id = cardSide(item) === 'back' ? item.back?.assetId : item.assetId
+    if (!edits) return []
+    const asset = id ? byId.get(id) : undefined
+    return [{ id, label: asset?.name ?? item.name, linked: !!asset?.handle, unavailable: !asset?.blob && !asset?.handle,
+      tooLarge: (asset?.blob?.size ?? asset?.size ?? 0) > visualExportLimits.sourceBytes }]
+  }))
+}
+
+function editedImageBounds(item: CanvasObject, edits: ImageEdits) {
+  const frame = imageFrameSize(item, cardSide(item))
+  const insets = imageEffectInsets(edits)
+  const width = frame.width + insets.left + insets.right
+  const height = frame.height + insets.top + insets.bottom
+  const x = frame.x - insets.left + width / 2 - item.width / 2
+  const y = frame.y - insets.top + height / 2 - item.height / 2
+  const theta = item.rotation % 360 * Math.PI / 180
+  const centerX = item.x + item.width / 2 + Math.cos(theta) * x - Math.sin(theta) * y
+  const centerY = item.y + item.height / 2 + Math.sin(theta) * x + Math.cos(theta) * y
+  return rotatedBounds({ x: centerX - width / 2, y: centerY - height / 2, width, height }, item.rotation)
+}
+
+async function editedImageMarkup(asset: CanvasAsset | undefined, item: CanvasObject, edits: ImageEdits) {
+  const label = asset?.name || item.name
+  requireValue(asset, `The source for edited image “${label}” is missing. Relink it before visual export.`)
+  requireValue(asset.size <= visualExportLimits.sourceBytes, `Edited image “${label}” exceeds the 16 MiB visual source limit. Use an editable package or workspace backup to retain the original.`)
+  let source = asset.blob
+  if (!source && asset.handle) {
+    const checked = await readLinkedFile({ ...asset, handle: asset.handle }, async file =>
+      safeMime(asset.mime, new Uint8Array(await file.slice(0, 2048).arrayBuffer())))
+    if ('file' in checked) source = checked.file
+  }
+  requireValue(source, `The source for edited image “${label}” is unavailable. Restore file access or relink it before visual export.`)
+  requireValue(source.size === asset.size, `The source for edited image “${label}” no longer matches its recorded size.`)
+  const mime = rasterMime(new Uint8Array(await source.slice(0, 32).arrayBuffer()))
+  requireValue(mime && mime === asset.mime, `The source for edited image “${label}” is not a supported raster image.`)
+  const url = URL.createObjectURL(source.slice(0, source.size, mime))
+  try {
+    const sourceImage = await loadImage(url)
+    const frame = imageFrameSize(item, cardSide(item))
+    const { canvas, insets, width, height } = renderEditedImage(sourceImage, edits, { ...frame, maxSide: visualExportLimits.editedSide })
+    const uri = canvas.toDataURL('image/png')
+    requireValue(uri.startsWith('data:image/png;base64,'), `Could not encode edited image “${label}”.`)
+    return { uri, markup: `<image href="${uri}" x="${frame.x - insets.left}" y="${frame.y - insets.top}" width="${width}" height="${height}" preserveAspectRatio="none"/>` }
+  } catch (error) {
+    throw new Error(`Could not export edited image “${label}”. ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  } finally { URL.revokeObjectURL(url) }
+}
+
+export async function renderProjectSvg(project: CanvasProject, options: CanvasExportOptions = {}, assets: readonly CanvasAsset[] = []) {
+  const { byId, stacks, shown, visible } = visibleScene(project)
   const rear = [...stacks.piles.values()].filter(pile => shown.has(pile.stack.id)).flatMap(pile => [...pile.rear].reverse())
-  const boxes = [...visible.map(item => rotatedBounds(item, item.rotation)), ...rear.map(card => rotatedBounds(card.rect, card.rect.rotation))]
+  const boxes = [...visible.flatMap(item => {
+    const edits = visibleImageEdit(item)
+    const objectBounds = rotatedBounds(item, item.rotation)
+    return edits ? [objectBounds, editedImageBounds(item, edits)] : [objectBounds]
+  }), ...rear.map(card => rotatedBounds(card.rect, card.rect.rotation))]
   const extent = boxes.reduce((bounds, item) => ({ left: Math.min(bounds.left, item.left), top: Math.min(bounds.top, item.top), right: Math.max(bounds.right, item.right), bottom: Math.max(bounds.bottom, item.bottom) }), boxes[0] ?? { left: 0, top: 0, right: 720, bottom: 420 })
   const x = Math.floor(extent.left) - 32
   const y = Math.floor(extent.top) - 32
   const worldWidth = Math.ceil(extent.right) - x + 32
   const worldHeight = Math.ceil(extent.bottom) - y + 32
-  const scale = Math.min(1, 4096 / worldWidth, 4096 / worldHeight, Math.sqrt(12_000_000 / (worldWidth * worldHeight)))
+  const scale = Math.min(1, visualExportLimits.canvasSide / worldWidth, visualExportLimits.canvasSide / worldHeight,
+    Math.sqrt(visualExportLimits.canvasPixels / (worldWidth * worldHeight)))
   const width = Math.ceil(worldWidth * scale)
   const height = Math.ceil(worldHeight * scale)
   const dark = options.theme === 'dark'
@@ -532,7 +624,7 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
     const y1 = first.y + first.height / 2
     const x2 = last.x + last.width / 2
     const y2 = last.y + last.height / 2
-    const stroke = edge.kind === 'relationship' ? '#8c6bac' : edge.kind === 'direction' ? '#527e67' : '#778eaf'
+    const stroke = edge.colour ? readColour(edge.colour) : edge.kind === 'relationship' ? '#8c6bac' : edge.kind === 'direction' ? '#527e67' : '#778eaf'
     const dash = edge.kind === 'relationship' ? ' stroke-dasharray="5 4"' : ''
     const angle = Math.atan2(y2 - y1, x2 - x1)
     const distance = last.width && last.height
@@ -546,9 +638,18 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
   const fragments = new Map<string, string>()
   let mediaChars = 0
   const mediaUri = async (assetId?: string) => {
-    const media = mediaChars < 48 * 1024 ** 2 ? await embedImage(assetId ? assetMap.get(assetId) : undefined) : null
+    const media = mediaChars < visualExportLimits.imageMarkup ? await embedImage(assetId ? assetMap.get(assetId) : undefined) : null
+    if (media && mediaChars + media.length > visualExportLimits.imageMarkup) return null
     mediaChars += media?.length ?? 0
     return media
+  }
+  const editedMedia = async (assetId: string | undefined, item: CanvasObject, edits: ImageEdits) => {
+    const message = 'Edited images exceed the visual image budget. Export a smaller selection or use an editable package.'
+    requireValue(mediaChars < visualExportLimits.imageMarkup, message)
+    const { uri, markup } = await editedImageMarkup(assetId ? assetMap.get(assetId) : undefined, item, edits)
+    mediaChars += uri.length
+    requireValue(mediaChars <= visualExportLimits.imageMarkup, message)
+    return markup
   }
   for (const item of visible) {
     const colour = readColour(item.colour)
@@ -558,23 +659,33 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
     let content: string
     if (cardSide(item) === 'back') {
       const side = cardFace(item, 'back')
-      const media = await mediaUri(side.assetId)
+      const edits = item.back?.imageEdits
+      const media = edits ? null : await mediaUri(side.assetId)
       const assetLabel = side.assetId ? assetMap.get(side.assetId)?.name || 'Attachment unavailable in export' : ''
-      const textHeight = media ? item.height * .45 : item.height
-      const body = [side.text, media ? '' : assetLabel].filter(Boolean).join('\n') || (!side.title && !side.assetId ? 'The back is empty.' : '')
+      const textHeight = edits ? imageFrameSize(item, 'back').y : media ? item.height * .45 : item.height
+      const body = [side.text, media || edits ? '' : assetLabel].filter(Boolean).join('\n') || (!side.title && !side.assetId ? 'The back is empty.' : '')
       content = fill + backTextSvg(side.title, body, item.width, textHeight, cardInk, item.textAlign) +
-        (media ? `<image href="${media}" x="8" y="${textHeight}" width="${Math.max(1, item.width - 16)}" height="${Math.max(1, item.height - textHeight - 8)}" preserveAspectRatio="xMidYMid meet"/>` : '')
+        (edits ? await editedMedia(side.assetId, item, edits) : media ? `<image href="${media}" x="8" y="${textHeight}" width="${Math.max(1, item.width - 16)}" height="${Math.max(1, item.height - textHeight - 8)}" preserveAspectRatio="xMidYMid meet"/>` : '')
     } else if (item.kind === 'image') {
-      const media = await mediaUri(item.assetId)
       const border = item.mode === 'direct' && item.border ? `<rect ${rect} rx="5" fill="none" stroke="${colour}" stroke-width="2"/>` : ''
-      content = media ? `${item.mode === 'card' ? fill : ''}<image href="${media}" ${rect} preserveAspectRatio="xMidYMid meet"/>${border}`
-        : `${fill}${textSvg(`${item.name}\nImage unavailable in export`, item.width, item.height, cardInk, 13)}`
+      if (item.imageEdits) {
+        const card = item.mode === 'card'
+        const picture = await editedMedia(item.assetId, item, item.imageEdits)
+        const title = card ? textSvg(item.name, item.width, 22, cardInk, 13, 8, 18, 'center') : ''
+        const caption = card && item.caption ? textSvg(item.caption, item.width, item.height, cardInk, 12, 8, item.height - 6) : ''
+        content = `${card ? fill : ''}${picture}${border}${title}${caption}`
+      } else {
+        const media = await mediaUri(item.assetId)
+        content = media ? `${item.mode === 'card' ? fill : ''}<image href="${media}" ${rect} preserveAspectRatio="xMidYMid meet"/>${border}`
+          : `${fill}${textSvg(`${item.name}\nImage unavailable in export`, item.width, item.height, cardInk, 13)}`
+      }
     } else if (item.kind === 'ellipse') {
       content = `<ellipse cx="${item.width / 2}" cy="${item.height / 2}" rx="${item.width / 2}" ry="${item.height / 2}" fill="${colour}"/>`
     } else if (item.kind === 'stroke') {
       content = `<polyline points="${(item.points ?? []).map((point) => `${point.x},${point.y}`).join(' ')}" fill="none" stroke="${colour}" stroke-width="${item.strokeWidth ?? 2}" stroke-linecap="round" stroke-linejoin="round"/>`
     } else if (item.kind === 'text') {
-      content = (item.mode === 'card' ? fill : '') + textSvg(item.text || item.name, item.width, item.height, item.mode === 'card' ? cardInk : ink, 22, 7, 22, item.textAlign)
+      const textInk = item.mode === 'card' ? cardInk : item.textColour ? readColour(item.textColour) : ink
+      content = (item.mode === 'card' ? fill : '') + textSvg(item.text || item.name, item.width, item.height, textInk, 22, 7, 22, item.textAlign)
     } else if (item.kind === 'frame' || item.kind === 'group') {
       const frameFill = item.kind === 'frame' ? colour : 'none'
       content = `<rect ${rect} rx="8" fill="${frameFill}" fill-opacity=".38" stroke="${dot}"/>${textSvg(item.name, item.width, item.height, ink, 13)}`
@@ -594,7 +705,7 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
   const gridShape = project.settings.grid === 'lines' ? `<path d="M${GRID_SPACING} 0H0V${GRID_SPACING}" fill="none" stroke="${dot}" stroke-width=".6"/>` : `<circle cx="1" cy="1" r=".9" fill="${dot}"/>`
   const background = options.background === 'transparent' ? '' : `<rect x="${x}" y="${y}" width="${worldWidth}" height="${worldHeight}" fill="${backdrop}"/>`
   const grid = options.background === 'grid' && project.settings.grid !== 'none' ? `<rect x="${x}" y="${y}" width="${worldWidth}" height="${worldHeight}" fill="url(#grid)"/>` : ''
-  const markup = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${x} ${y} ${worldWidth} ${worldHeight}"><title>${xml(project.name)}</title><defs><pattern id="grid" width="${GRID_SPACING}" height="${GRID_SPACING}" patternUnits="userSpaceOnUse">${gridShape}</pattern><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="#527e67"/></marker></defs>${background}${grid}${containers.map((item) => fragments.get(item.id)).join('')}${silhouettes}${edgeLines.join('')}${objects.map((item) => fragments.get(item.id)).join('')}</svg>`
+  const markup = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${x} ${y} ${worldWidth} ${worldHeight}"><title>${xml(project.name)}</title><defs><pattern id="grid" width="${GRID_SPACING}" height="${GRID_SPACING}" patternUnits="userSpaceOnUse">${gridShape}</pattern><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="context-stroke"/></marker></defs>${background}${grid}${containers.map((item) => fragments.get(item.id)).join('')}${silhouettes}${edgeLines.join('')}${objects.map((item) => fragments.get(item.id)).join('')}</svg>`
   return { blob: new Blob([markup], { type: 'image/svg+xml' }), width, height }
 }
 

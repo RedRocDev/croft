@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { CanvasAsset, CanvasProject } from './model'
 import { CanvasDialog } from './ProjectViews'
-import { canvasAssetIds, exportProject, projectExportInventory, type CanvasExportFormat, type CanvasExportOptions } from './portability'
+import { canvasAssetIds, editedVisualImageInventory, exportProject, projectExportInventory, visualExportLimits, type CanvasExportFormat, type CanvasExportOptions } from './portability'
 import { getAssets } from './storage'
 import { formatMiB } from './CanvasBackupDialog'
 
@@ -28,7 +28,10 @@ export function CanvasExportDialog({ close, projects, project, selectedIds, dark
   const editable = format === 'croft' || format === 'zip'
   const options: CanvasExportOptions = { scope, selectedIds, theme: dark ? 'dark' : 'light', background }
   const inventory = assets ? projectExportInventory(projects, project, options, assets) : undefined
-  const limited = editable && !!inventory && (inventory.overLimit.length > 0 || inventory.exceedsPackage)
+  const editedImages = !editable && assets ? editedVisualImageInventory(projects, project, options, assets) : []
+  const blockedImages = editedImages.filter(image => image.unavailable || image.tooLarge)
+  const linkedImages = editedImages.filter(image => image.linked).length
+  const limited = editable ? !!inventory && (inventory.overLimit.length > 0 || inventory.exceedsPackage) : blockedImages.length > 0
 
   return <CanvasDialog title="Export canvas" close={() => { if (!busy) close() }}>
     <div className="ic-form">
@@ -48,7 +51,7 @@ export function CanvasExportDialog({ close, projects, project, selectedIds, dark
       {inventory ? <section aria-label="Portable export inventory">
         <p><strong>{inventory.projectCount} canvas{inventory.projectCount === 1 ? '' : 'es'} in scope.</strong></p>
         {editable ? <>
-          <p>{inventory.included.length} embedded files ({formatMiB(inventory.bytes)}) before package overhead. Versions and recoveries stay in the workspace.</p>
+          <p>{inventory.included.length} embedded files ({formatMiB(inventory.bytes)}) before package overhead. Editable files include original image pixels and reversible edits. Versions and recoveries stay in the workspace.</p>
           <p>{inventory.relink.length} linked files need relinking, {inventory.missing.length} files are already missing, and {inventory.outside.length} canvas links point outside the scope. {inventory.externalPages.length} Croft page links point outside iCanvas.</p>
           {inventory.relink.length > 0 && <details><summary>Files that require relinking</summary><ul>{inventory.relink.slice(0, 30).map(asset => <li key={asset.id}>{asset.name}</li>)}</ul>
             {inventory.relink.length > 30 && <p>{inventory.relink.length - 30} more links are listed in the package.</p>}
@@ -58,7 +61,14 @@ export function CanvasExportDialog({ close, projects, project, selectedIds, dark
           {limited && <p role="alert">This scope exceeds the portable export limit. Use Workspace Backup to retain the larger attachments, or choose a smaller scope for a portable copy.</p>}
           {inventory.overLimit.length > 0 && <ul aria-label="Files above the portable limit">{inventory.overLimit.slice(0, 30).map(asset => <li key={asset.id}>{asset.name} ({formatMiB(asset.size)})</li>)}</ul>}
         </> : <>
-          <p>Visual exports show the current face of each visible card and the current stack layout. Editable packages preserve both faces and all stack members. Audio, video, linked files, unavailable files and unsupported images appear as labels. Embedded raster images are limited to 16 MiB each, with an additional per-canvas image budget.</p>
+          <p>Visual exports show visible card faces and the current stack layout. Cropped or masked images are flattened to visible pixels. Audio, video and unavailable unedited images appear as labels.</p>
+          <p>Source images are limited to {formatMiB(visualExportLimits.sourceBytes)} each. Edited image output is capped at {visualExportLimits.editedSide}px per side, with a separate per-canvas image budget. Final canvas output is capped at {visualExportLimits.canvasSide}px per side and 12 megapixels.</p>
+          {linkedImages > 0 && <p>Export needs read access to {linkedImages} linked edited image{linkedImages === 1 ? '' : 's'}. Restore file access or relink before exporting.</p>}
+          {blockedImages.length > 0 && <section aria-label="Edited images blocking visual export">
+            <p role="alert">These edited images need an available source within the visual export limit.</p>
+            <ul>{blockedImages.slice(0, 30).map((image, index) => <li key={index}>{image.label} ({image.unavailable ? 'source unavailable' : 'source too large'})</li>)}</ul>
+            {blockedImages.length > 30 && <p>{blockedImages.length - 30} more edited images are unavailable or too large.</p>}
+          </section>}
           <p>{inventory.relink.length} linked and {inventory.missing.length} missing attachments in scope. Versions and recovery history are excluded. Visual archives are limited to 100 canvases and 120 MiB. PDF fits each canvas on one A4 page.</p>
         </>}
       </section> : !error && <p role="status">Reading file inventory…</p>}

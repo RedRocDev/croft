@@ -1,10 +1,12 @@
 import type { OrientedRect } from './geometry'
+import type { ImageEdits } from './imageEdits'
 
 export type Point = { x: number; y: number }
 export type Camera = Point & { zoom: number }
 export type ObjectKind = 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'image' | 'audio' | 'video' | 'file' | 'canvas' | 'frame' | 'group' | 'stack' | 'page'
 export type CardSide = 'front' | 'back'
-export type CardFace = { title: string; text: string; assetId?: string }
+export type CardFace = { title: string; text: string; assetId?: string; imageEdits?: ImageEdits }
+export type ProjectSwatch = { id: string; name: string; colour: string }
 export type TextAlignment = 'left' | 'center' | 'right'
 export type StackLayout = 'compact' | 'fan'
 export type EdgeKind = 'direction' | 'connection' | 'relationship'
@@ -14,12 +16,13 @@ export type CanvasObject = Point & {
   hidden: boolean; locked: boolean; name: string; text: string; colour: string; mode: 'direct' | 'card'
   parentId?: string; assetId?: string; targetId?: string; points?: Point[]; strokeWidth?: number
   collapsed?: boolean; caption?: string; border?: boolean; referenceOnly?: boolean; textAlign?: TextAlignment
+  imageEdits?: ImageEdits; textColour?: string
   /** Frame bounds before automatic growth, in the same world coordinates as the frame. */
   frameBase?: OrientedRect
   back?: CardFace; visibleSide?: CardSide
   stack?: { order: string[]; layout: StackLayout }
 }
-export type CanvasEdge = { id: string; kind: EdgeKind; from: string; to: string; label: string }
+export type CanvasEdge = { id: string; kind: EdgeKind; from: string; to: string; label: string; colour?: string }
 export type PresentationStop = { id: string; name: string; canvasId: string; camera: Camera; duration: number }
 export type CanvasSettings = {
   grid: Grid; minimap: boolean; snapGrid: boolean; snapObjects: boolean; guides: boolean
@@ -31,6 +34,7 @@ export type CanvasProject = {
   trashedAt?: number
   createdAt: number; updatedAt: number; camera: Camera; settings: CanvasSettings
   objects: CanvasObject[]; edges: CanvasEdge[]; stops: PresentationStop[]
+  swatches?: ProjectSwatch[]
 }
 export type CanvasAsset = { id: string; name: string; mime: string; size: number; blob?: Blob; handle?: FileSystemFileHandle; linked?: boolean }
 export type Placement = 'smart' | 'free'
@@ -43,6 +47,7 @@ export const kinds: Record<ObjectKind, string> = {
   frame: 'Frame', group: 'Group', stack: 'Card stack', page: 'Croft page',
 }
 export const edgeLabels: Record<EdgeKind, string> = { direction: 'Directions', connection: 'Connections', relationship: 'Relationships' }
+export const colourForEdge: Record<EdgeKind, string> = { direction: '#537e67', connection: '#858783', relationship: '#8266a3' }
 
 export function canFlip(object: CanvasObject) {
   return object.kind === 'note' || (object.mode === 'card' && !['frame', 'group', 'stack'].includes(object.kind))
@@ -53,7 +58,12 @@ export function cardSide(object: CanvasObject): CardSide {
 }
 
 export function cardFace(object: CanvasObject, side = cardSide(object)): CardFace {
-  return side === 'back' ? object.back ?? { title: '', text: '' } : { title: object.name, text: object.text, assetId: object.assetId }
+  return side === 'back' ? object.back ?? { title: '', text: '' } :
+    { title: object.name, text: object.text, assetId: object.assetId, imageEdits: object.imageEdits }
+}
+
+export function imageAssetId(object: CanvasObject, side = cardSide(object)) {
+  return side === 'back' ? object.back?.assetId : object.kind === 'image' ? object.assetId : undefined
 }
 
 export function objectAssetIds(object: CanvasObject) {

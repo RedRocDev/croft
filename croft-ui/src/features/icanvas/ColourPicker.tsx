@@ -1,7 +1,7 @@
 import { Plus } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
 import { readHexColour, readRGBChannels, toHexColour, toHSV, toRGB, type HSV, type RGB } from './colour'
-import { palette } from './model'
+import { palette, type ProjectSwatch } from './model'
 
 function editableColour(colour: string) {
   // Existing packages may use CSS hex with alpha. The separate opacity control remains available.
@@ -10,7 +10,9 @@ function editableColour(colour: string) {
   return colour
 }
 
-export function ColourPicker({ colour, onChange }: { colour: string; onChange: (colour: string) => void }) {
+export function ColourPicker({ colour, onChange, swatches }: {
+  colour: string; onChange: (colour: string) => void; swatches?: readonly ProjectSwatch[]
+}) {
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(false)
@@ -35,6 +37,11 @@ export function ColourPicker({ colour, onChange }: { colour: string; onChange: (
         {preset ? <Plus aria-hidden="true" /> : <span aria-hidden="true" />}
       </button>
     </div>
+    {!!swatches?.length && <div role="group" aria-label="Project swatches" className="ic-inspector-palette">
+      {swatches.map(swatch => <button key={swatch.id} type="button" className="ic-inspector-swatch"
+        style={{ backgroundColor: swatch.colour }} aria-label={'Use swatch ' + swatch.name} title={swatch.name}
+        aria-pressed={colour === swatch.colour} onClick={() => { onChange(swatch.colour); setOpen(false) }} />)}
+    </div>}
     {open && <ColourInputs id={id} original={colour} close={close} apply={onChange} />}
   </div>
 }

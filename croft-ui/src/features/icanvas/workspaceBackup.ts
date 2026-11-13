@@ -1,7 +1,8 @@
 import { canvasAssetIds, readProject, safeMime } from './portability.ts'
 import type { CanvasAsset, CanvasProject } from './model.ts'
 import type { CanvasRecovery, CanvasVersion, WorkspaceStorageState } from './storage.ts'
-import { assertStackMembership, containsCardExtensions } from './stackPersistence.ts'
+import { assertStackMembership } from './stackPersistence.ts'
+import { assertEditedImageAsset, canvasFormatVersion, editedImageAssetIds, type CanvasFormatVersion } from './imagePersistence.ts'
 
 export type WorkspaceBackupInventory = {
   projects: number; trashed: number; versions: number; recoveries: number; bytes: number;
@@ -17,6 +18,7 @@ type TransferOptions = { signal?: AbortSignal; progress?: (finished: number, tot
 const encoder = new TextEncoder()
 const magicV1 = encoder.encode('CROFT WORKSPACE BACKUP 1\n')
 const magicV2 = encoder.encode('CROFT WORKSPACE BACKUP 2\n')
+const magicV3 = encoder.encode('CROFT WORKSPACE BACKUP 3\n')
 const decoder = new TextDecoder('utf-8', { fatal: true })
 const metadataLimit = 64 * 1024 ** 2
 const mediaChunk = 1024 ** 2
@@ -130,7 +132,7 @@ function verifyParents<T extends { id: string; parentId?: string | null }>(rows:
   }
 }
 
-function metadata(bytes: Uint8Array, version: 1 | 2): SnapshotMetadata {
+function metadata(bytes: Uint8Array, version: CanvasFormatVersion): SnapshotMetadata {
   const raw = data(JSON.parse(decoder.decode(bytes)) as unknown)
   const assets = items(raw.assets).map(readBackupAsset)
   const projects = items(raw.projects).map(project => readProject(project, maxEntries))
@@ -146,7 +148,13 @@ function metadata(bytes: Uint8Array, version: 1 | 2): SnapshotMetadata {
   check(versionKeys.size === versions.length, 'Duplicate version number in backup.')
   for (const version of versions) verifyParents(unique([version.project, ...version.descendants], 'version canvas'), true)
   const scenes = allScenes({ projects, versions, recoveries })
-  check(version === 2 || !containsCardExtensions(scenes), 'Cards and stacks require a version 2 Croft backup.')
+  const neededVersion = canvasFormatVersion(scenes)
+  check(version >= neededVersion, `This content requires a version ${neededVersion} Croft backup.`)
+  for (const id of editedImageAssetIds(scenes)) {
+    const asset = assetMap.get(id)
+    check(!asset?.copied || asset.mime !== 'application/octet-stream', 'Edited image source data do not match a supported raster image.')
+    assertEditedImageAsset(asset)
+  }
   for (const scene of scenes) {
     const objects = unique(scene.objects, 'object')
     unique(scene.edges, 'edge')
@@ -168,11 +176,12 @@ export function prepareWorkspaceBackup(snapshot: WorkspaceStorageState) {
     return { id: asset.id, name: asset.name, mime: asset.mime, size: asset.size, copied: Boolean(asset.blob), linked: Boolean(asset.handle || asset.linked) || undefined }
   })
   const { projects, versions, recoveries } = snapshot
-  const version = containsCardExtensions(allScenes(snapshot)) ? 2 : 1
+  const version = canvasFormatVersion(allScenes(snapshot))
   const bytes = encoder.encode(JSON.stringify({ projects, versions, recoveries, assets }))
   check(bytes.byteLength <= metadataLimit, 'Workspace history and canvas metadata exceed the 64 MiB backup header limit. Data were not backed up.')
   metadata(bytes, version)
-  return { manifest: bytes, magic: version === 2 ? magicV2 : magicV1, blobs: snapshot.assets.flatMap(asset => asset.blob ? [asset.blob] : []) }
+  const magic = version === 3 ? magicV3 : version === 2 ? magicV2 : magicV1
+  return { manifest: bytes, magic, blobs: snapshot.assets.flatMap(asset => asset.blob ? [asset.blob] : []) }
 }
 
 export async function writeWorkspaceBackup({ manifest, magic, blobs }: ReturnType<typeof prepareWorkspaceBackup>, sink: BackupSink, options: TransferOptions = {}) {
@@ -232,14 +241,15 @@ export async function parseWorkspaceBackup(file: Blob, options: TransferOptions 
     return bytes
   }
   const magic = await read(magicV1.length)
-  const version = bytesEqual(magic, magicV2) ? 2 : 1
-  check(version === 2 || bytesEqual(magic, magicV1), 'Unsupported Croft workspace backup format.')
+  const version = bytesEqual(magic, magicV3) ? 3 : bytesEqual(magic, magicV2) ? 2 : 1
+  check(version !== 1 || bytesEqual(magic, magicV1), 'Unsupported Croft workspace backup format.')
   const length = new DataView((await read(4)).buffer).getUint32(0, true)
   check(length > 0 && length <= metadataLimit, 'Workspace backup header is oversized.')
   const manifestHash = await read(digestBytes)
   const manifest = await read(length)
   check(bytesEqual(await digest(manifest), manifestHash), 'Workspace backup metadata failed its checksum.')
   const { projects, versions, recoveries, assets: entries } = metadata(manifest, version)
+  const editedIds = editedImageAssetIds(allScenes({ projects, versions, recoveries }))
   const embedded = entries.filter(asset => asset.copied)
   const total = embedded.reduce((sum, asset) => sum + asset.size, 0)
   const payload = embedded.reduce((sum, asset) => sum + asset.size + Math.ceil(asset.size / mediaChunk) * digestBytes, 0)
@@ -281,7 +291,9 @@ export async function parseWorkspaceBackup(file: Blob, options: TransferOptions 
         finished += count
         options.progress?.(finished, total)
       }
-      assets.push({ id, name, mime: type, size, blob: new Blob(pieces, { type }) })
+      const asset = { id, name, mime: type, size, blob: new Blob(pieces, { type }) }
+      if (editedIds.has(id)) assertEditedImageAsset(asset)
+      assets.push(asset)
     }
   } finally {
     await reader.cancel().catch(() => {})
@@ -314,12 +326,15 @@ export function cloneWorkspaceBackup(snapshot: WorkspaceStorageState): Workspace
     const stops = forProject(stopIds, project.id)
     return {
       ...project, id: translate(projectIds, project.id), parentId: project.parentId === null ? null : translate(projectIds, project.parentId),
+      ...(project.swatches ? { swatches: project.swatches.map(swatch => ({ ...swatch })) } : {}),
       coverAssetId: project.coverAssetId && translate(assetIds, project.coverAssetId), iconAssetId: project.iconAssetId && translate(assetIds, project.iconAssetId),
       objects: project.objects.map(object => ({
         ...object, id: translate(objects, object.id), parentId: object.parentId && translate(objects, object.parentId),
         assetId: object.assetId && translate(assetIds, object.assetId),
         targetId: object.kind === 'canvas' && object.targetId ? translate(projectIds, object.targetId) : object.targetId,
-        ...(object.back ? { back: { ...object.back, assetId: object.back.assetId && translate(assetIds, object.back.assetId) } } : {}),
+        ...(object.imageEdits ? { imageEdits: structuredClone(object.imageEdits) } : {}),
+        ...(object.back ? { back: { ...object.back, assetId: object.back.assetId && translate(assetIds, object.back.assetId),
+          ...(object.back.imageEdits ? { imageEdits: structuredClone(object.back.imageEdits) } : {}) } } : {}),
         ...(object.stack ? { stack: { ...object.stack, order: object.stack.order.map(id => translate(objects, id)) } } : {}),
       })),
       edges: project.edges.map(edge => ({ ...edge, id: translate(edges, edge.id), from: translate(objects, edge.from), to: translate(objects, edge.to) })),

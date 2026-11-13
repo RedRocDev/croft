@@ -1,0 +1,4 @@
+.ic-edited-image { position: relative; width: 100%; min-height: 0; min-width: 0; flex: 1 1 auto; }
+.ic-edited-image-paint { position: absolute; inset: 0; pointer-events: none; }
+.ic-edited-image-paint > canvas { position: absolute; max-width: none; }
+.ic-edited-image-error { position: relative; display: block; padding: 7px; font-size: 12px; }

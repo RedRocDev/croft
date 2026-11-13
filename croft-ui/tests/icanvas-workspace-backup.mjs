@@ -30,9 +30,10 @@ try {
   attachChecks(page)
   await page.goto(origin)
   await page.locator('.ic-project-open').filter({ hasText: 'Holiday Ideas' }).waitFor()
-  await page.evaluate(async () => {
+  const imageDigest = await page.evaluate(async () => {
     const store = await import('/src/features/icanvas/storage.ts')
     const { createProject, makeObject } = await import('/src/features/icanvas/model.ts')
+    const { defaultImageEdits } = await import('/src/features/icanvas/imageEdits.ts')
     const bytes = new Uint8Array(44 * 1024 ** 2)
     bytes.fill(55)
     const blob = new Blob([bytes], { type: 'application/octet-stream' })
@@ -52,14 +53,33 @@ try {
     stack.stack = { order: [departure.id, media.id], layout: 'compact' }
     child.objects = [makeObject('file', { x: 0, y: 0 }, { name: link.name, assetId: link.id })]
     board.objects = [departure, arrival, media, stack]
+    const chart = document.createElement('canvas')
+    chart.width = 64
+    chart.height = 40
+    const context = chart.getContext('2d')
+    context.fillStyle = '#8a3d57'
+    context.fillRect(0, 0, 29, 40)
+    context.fillStyle = '#348757'
+    context.fillRect(29, 0, 35, 36)
+    const png = await new Promise(resolve => chart.toBlob(resolve, 'image/png'))
+    const image = { id: 'synthetic-chart', name: 'Trail chart.png', mime: 'image/png', size: png.size, blob: png }
+    const edits = { ...structuredClone(defaultImageEdits), source: { width: 64, height: 40 }, crop: { x: .25, y: 0, width: .5, height: .75 } }
+    const picture = makeObject('image', { x: 540, y: 90 }, { name: image.name, assetId: image.id, imageEdits: edits, mode: 'card',
+      back: { title: 'Reverse map', text: 'Alternate route', assetId: image.id,
+        imageEdits: { ...structuredClone(edits), look: { name: 'black-white', intensity: 70 } } } })
+    board.objects.push(picture)
+    board.swatches = [{ id: 'synthetic-colour', name: 'Trail green', colour: '#348757' }]
     board.stops = [{ id: 'synthetic-stop', name: 'Stop', canvasId: child.id, camera: child.camera, duration: 5 }]
     board.edges = [{ id: 'synthetic-edge', kind: 'relationship', from: departure.id, to: arrival.id, label: 'Night 1' }]
     const older = { ...board, objects: [departure, arrival, { ...media, back: { ...media.back, assetId: previous.id } },
-      { ...stack, stack: { order: [media.id, departure.id], layout: 'fan' } }] }
-    await store.saveProjects([board, child, unopened], [current, link, previous, reverse])
+      { ...stack, stack: { order: [media.id, departure.id], layout: 'fan' } },
+      { ...picture, imageEdits: { ...picture.imageEdits, straighten: -17 } }] }
+    await store.saveProjects([board, child, unopened], [current, link, previous, reverse, image])
     await store.saveVersion(older, 'Checkpoint with earlier attachment', [older, child])
     await store.saveRecovery({ ...older, name: 'Backup Expedition recovery test', updatedAt: board.updatedAt + 1 })
     await store.saveProjects([{ ...board, updatedAt: board.updatedAt + 2 }])
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await png.arrayBuffer()))
+    return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')
   })
   await page.reload()
   await page.getByRole('button', { name: 'Backup & restore', exact: true }).click()
@@ -132,6 +152,7 @@ try {
   const prefix = Buffer.alloc(64)
   const backupFile = await open(backupPath, 'r')
   try { await backupFile.read(prefix, 0, prefix.length, 0) } finally { await backupFile.close() }
+  assert.match(prefix.toString('utf8'), /^CROFT WORKSPACE BACKUP 3\n/)
   await writeFile(incomplete, prefix, { flag: 'wx' })
   await dialog.locator('input[type=file]').setInputFiles(incomplete)
   await dialog.getByRole('alert').filter({ hasText: 'incomplete' }).waitFor()
@@ -166,6 +187,11 @@ try {
     const recovery = state.recoveries.find(entry => entry.projectId === parent.id)
     const historyAsset = state.assets.find(asset => asset.id === version.project.objects[2].back.assetId)
     const reverseAsset = state.assets.find(asset => asset.id === parent.objects[2].back.assetId)
+    const image = parent.objects.find(item => item.kind === 'image')
+    const priorImage = version.project.objects.find(item => item.id === image.id)
+    const recoveredImage = recovery.project.objects.find(item => item.id === image.id)
+    const sourceChart = state.assets.find(asset => asset.id === image.assetId)
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await sourceChart.blob.arrayBuffer()))
     return {
       ids: [parent.id, child.id, old.id],
       hierarchy: child.parentId === parent.id && parent.objects[1].targetId === child.id && parent.stops[0].canvasId === child.id,
@@ -178,16 +204,20 @@ try {
         parent.objects[2].parentId === parent.objects[3].id && version.project.objects[3].stack.layout === 'fan' &&
         version.project.objects[3].stack.order.join(',') === [parent.objects[2].id, parent.objects[0].id].join(','),
       faces: parent.objects[2].visibleSide === 'back' && parent.objects[2].back.title === 'File context' && await reverseAsset.blob.text() === 'back-only data',
+      imageState: image.imageEdits.crop.width === .5 && image.imageEdits.straighten === 0 && image.back.assetId === image.assetId &&
+        image.back.imageEdits.look.intensity === 70 && priorImage.imageEdits.straighten === -17 && recoveredImage.imageEdits.straighten === -17 &&
+        parent.swatches[0].colour === '#348757',
+      imageDigest: Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join(''),
       starterCount: state.projects.filter(project => project.name === 'Holiday Ideas').length,
     }
   })
   assert.deepEqual(sourceIds.filter(id => result.ids.includes(id)), [])
   assert.deepEqual({ ...result, ids: undefined }, {
     ids: undefined, hierarchy: true, edges: true, trash: true, media: 44 * MiB, bytes: '7'.repeat(20),
-    link: true, oldAttachment: 'draft history', history: true, recovery: true, stack: true, faces: true, starterCount: 2,
+    link: true, oldAttachment: 'draft history', history: true, recovery: true, stack: true, faces: true, imageState: true, imageDigest, starterCount: 2,
   })
   assert.deepEqual(errors, [])
-  console.log('iCanvas workspace backup QA passed: real Chrome writable stream, fresh profile merge, 44 MiB media, face assets, visible sides, stack order, lineage, edges, links, Trash, versions and recovery.')
+  console.log(`iCanvas v3 workspace backup QA passed: Chrome writable stream, fresh profile restore, 44 MiB media, two-face image edits, project swatches, image SHA-256 ${imageDigest}, stack order, lineage, edges, links, Trash, versions and recovery.`)
 } finally {
   await browser.close()
   const target = path.resolve(workspace)

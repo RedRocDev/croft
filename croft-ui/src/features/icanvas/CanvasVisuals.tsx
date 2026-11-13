@@ -3,9 +3,11 @@ import { AudioLines, FileText, Layers, Video } from 'lucide-react'
 import { safeCanvasMime } from './ImportDialog'
 import { canRequestFileRead, fileAccessProblem, readLinkedFile, requestFileRead, type FileAccessProblem } from './linkedFiles'
 import { getAsset } from './storage'
-import { cardFace, cardSide, objectFlags, type CanvasAsset, type CanvasObject, type CanvasProject } from './model'
+import { cardFace, cardSide, imageAssetId, objectFlags, type CanvasAsset, type CanvasObject, type CanvasProject } from './model'
 import { rotatedBounds } from './geometry'
 import { layoutStacks } from './stackScene'
+import { EditedImage, EditedImageThumbnail } from './ImageVisual'
+import { imageEffectInsets, imageFrameSize, type ImageEdits } from './imageEdits'
 
 type MediaResult = { url?: string; problem?: FileAccessProblem; handle?: FileSystemFileHandle; asset?: Pick<CanvasAsset, 'mime' | 'name'> }
 
@@ -120,8 +122,12 @@ export function CanvasThumbnail({ project }: { project: CanvasProject }) {
   if (!visible.length) return <div className="ic-thumbnail ic-thumbnail-empty" aria-hidden="true"><Layers size={18} /></div>
   const visibleIds = new Set(visible.map(object => object.id))
   const rear = [...scene.piles.values()].flatMap(pile => pile.frontId && visibleIds.has(pile.frontId) ? [...pile.rear].reverse() : [])
-  const bounds = [...visible, ...rear.map(card => card.rect)].map(object =>
-    rotatedBounds(object, object.rotation))
+  const bounds = [...visible.map(object => {
+    const box = rotatedBounds(object, object.rotation)
+    const insets = imageEffectInsets(cardFace(object).imageEdits)
+    const padding = Math.max(insets.left, insets.right, insets.top, insets.bottom) * Math.SQRT2
+    return { left: box.left - padding, top: box.top - padding, right: box.right + padding, bottom: box.bottom + padding }
+  }), ...rear.map(card => rotatedBounds(card.rect, card.rect.rotation))]
   const left = Math.min(...bounds.map(rect => rect.left)) - 24
   const top = Math.min(...bounds.map(rect => rect.top)) - 24
   const width = Math.max(...bounds.map(rect => rect.right)) - left + 24
@@ -133,6 +139,8 @@ export function CanvasThumbnail({ project }: { project: CanvasProject }) {
     {visible.map(object => {
       const side = cardSide(object)
       const back = side === 'back' ? cardFace(object, side) : undefined
+      const mediaId = imageAssetId(object, side)
+      const edits = cardFace(object, side).imageEdits
       return <g key={object.id} transform={`rotate(${object.rotation} ${object.x + object.width / 2} ${object.y + object.height / 2})`}>
         <rect x={object.x} y={object.y} width={object.width} height={object.collapsed ? 35 : object.height}
           rx={5} fill={object.kind === 'text' && side === 'front' ? 'var(--muted)' : object.colour} fillOpacity={object.kind === 'frame' ? .25 : .75} />
@@ -140,9 +148,16 @@ export function CanvasThumbnail({ project }: { project: CanvasProject }) {
           <text x={8} y={15} fill="#151d16" fontSize={9}>Back</text>
           <text x={8} y={32} fill="#151d16" fontSize={13}>{back.title || back.text.split('\n')[0] || (back.assetId ? 'Attachment' : '')}</text>
         </svg>}
+        {mediaId && edits && <ImageThumbnail object={object} assetId={mediaId} edits={edits} />}
       </g>
     })}
   </svg>
+}
+
+function ImageThumbnail({ object, assetId, edits }: { object: CanvasObject; assetId: string; edits: ImageEdits }) {
+  const { url } = useAssetUrl(assetId)
+  const frame = imageFrameSize(object, cardSide(object))
+  return url ? <EditedImageThumbnail url={url} edits={edits} frame={{ ...frame, x: frame.x + object.x, y: frame.y + object.y }} /> : null
 }
 
 const fileMessages: Record<FileAccessProblem, string> = {
@@ -175,24 +190,42 @@ function pauseOnDetach(media: HTMLMediaElement | null) {
   if (media) return () => { media.pause() }
 }
 
-function BackAttachment({ assetId, replace }: { assetId: string; replace?: () => void }) {
+function BackAttachment({ assetId, replace, edits, compare, frame }: {
+  assetId: string; replace?: () => void; edits?: ImageEdits; compare?: boolean; frame?: { width: number; height: number }
+}) {
   const media = useAssetUrl(assetId)
   if (media.problem) return <AssetAccess media={media} hasAsset replace={replace} />
   const { url, asset } = media
   if (!url || !asset) return <span role="status">Loading attachment…</span>
-  if (asset.mime.startsWith('image/')) return <img src={url} alt={asset.name} draggable={false} />
+  if (asset.mime.startsWith('image/')) return frame && edits
+    ? <EditedImage url={url} alt={asset.name} edits={edits} compare={compare} frame={frame} />
+    : <img src={url} alt={asset.name} draggable={false} />
   if (asset.mime.startsWith('audio/')) return <audio ref={pauseOnDetach} controls preload="metadata" src={url} aria-label={asset.name} />
   if (asset.mime.startsWith('video/')) return <video ref={pauseOnDetach} controls preload="none" src={url} aria-label={asset.name} />
   return <a className="ic-card-back-file" href={url} download={asset.name}><FileText size={14} />{asset.name}</a>
 }
 
-function CardBackFace({ object, replace }: { object: CanvasObject; replace?: () => void }) {
-  const { title, text, assetId } = cardFace(object, 'back')
+function CardBackFace({ object, replace, imageDraft, compareImage }: Pick<ObjectContentProps, 'object' | 'imageDraft' | 'compareImage'> & { replace?: () => void }) {
+  const { title, text, assetId, imageEdits } = cardFace(object, 'back')
+  const edits = imageDraft ?? imageEdits
   const textStyle = { textAlign: object.textAlign }
-  return <div className="ic-card-back" data-card-scroll>
+  const content = <>
     <span className="ic-card-back-marker">Back</span>
     {title && <p className="ic-card-back-title" style={textStyle} data-selectable-card-text>{title}</p>}
     {text && <p className="ic-card-back-text" style={textStyle} data-selectable-card-text>{text}</p>}
+  </>
+  if (edits && assetId) {
+    const frame = imageFrameSize(object, 'back')
+    const border = object.mode === 'card' || object.kind === 'note' ? 1 : 0
+    return <>
+      <div className="ic-card-back ic-card-back-with-image" style={{ height: frame.y }} data-card-scroll>{content}</div>
+      <div className="ic-image-slot" style={{ left: frame.x - border, top: frame.y - border, width: frame.width, height: frame.height }}>
+        <BackAttachment assetId={assetId} replace={replace} edits={edits} compare={compareImage} frame={frame} />
+      </div>
+    </>
+  }
+  return <div className="ic-card-back" data-card-scroll>
+    {content}
     {assetId && <div className="ic-card-back-asset" data-media-control>
       <BackAttachment assetId={assetId} replace={replace} />
     </div>}
@@ -202,21 +235,31 @@ function CardBackFace({ object, replace }: { object: CanvasObject; replace?: () 
 
 type ObjectContentProps = {
   object: CanvasObject; target?: CanvasProject; reloadMedia?: string; replace: () => void; canRelink?: boolean; replaceBack?: () => void
+  imageDraft?: ImageEdits; compareImage?: boolean
 }
 
 export function ObjectContent(props: ObjectContentProps) {
   return cardSide(props.object) === 'back'
-    ? <CardBackFace object={props.object} replace={props.canRelink === false ? undefined : props.replaceBack} />
+    ? <CardBackFace object={props.object} replace={props.canRelink === false ? undefined : props.replaceBack}
+      imageDraft={props.imageDraft} compareImage={props.compareImage} />
     : <FrontContent {...props} />
 }
 
-function FrontContent({ object, target, reloadMedia, replace, canRelink = true }: ObjectContentProps) {
+function FrontContent({ object, target, reloadMedia, replace, canRelink = true, imageDraft, compareImage }: ObjectContentProps) {
   const media = useAssetUrl(reloadMedia)
   const { url, problem } = media
   const showsMedia = object.kind === 'audio' || object.kind === 'video' || object.kind === 'image' || object.kind === 'file'
   if (showsMedia && (problem || !reloadMedia)) return <AssetAccess media={media} hasAsset={!!reloadMedia} replace={canRelink ? replace : undefined} />
   switch (object.kind) {
-    case 'image': return url ? <img className="ic-image" src={url} alt={object.name} draggable={false} /> : <div className="ic-media-placeholder">Loading image…</div>
+    case 'image': {
+      if (!url) return <div className="ic-media-placeholder">Loading image…</div>
+      const edits = imageDraft ?? object.imageEdits
+      if (!edits) return <img className="ic-image" src={url} alt={object.name} draggable={false} />
+      const frame = imageFrameSize(object, 'front')
+      return <div className="ic-image-slot ic-image-slot-front" style={{ left: 0, top: frame.y - frame.x, width: frame.width, height: frame.height }}>
+        <EditedImage url={url} alt={object.name} edits={edits} compare={compareImage} frame={frame} />
+      </div>
+    }
     case 'audio': return url ? <audio ref={pauseOnDetach} controls preload="metadata" src={url} aria-label={object.name} /> : <div className="ic-media-placeholder"><AudioLines size={18} /> Audio</div>
     case 'video': return url ? <video ref={pauseOnDetach} controls preload="none" src={url} aria-label={object.name} /> : <div className="ic-media-placeholder"><Video size={18} /> Video</div>
     case 'file': return <div className="ic-media-placeholder"><FileText size={18} />{object.name}{url && <a href={url} download={object.name}>Download</a>}</div>
@@ -226,6 +269,7 @@ function FrontContent({ object, target, reloadMedia, replace, canRelink = true }
       <polyline points={object.points?.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={object.colour} strokeLinecap="round" strokeLinejoin="round" strokeWidth={object.strokeWidth ?? 3} />
     </svg>
     case 'frame': case 'group': case 'stack': case 'ellipse': case 'rectangle': return null
-    case 'text': case 'note': return <div className="ic-object-text" style={{ textAlign: object.textAlign }}>{object.text || object.name}</div>
+    case 'text': case 'note': return <div className="ic-object-text" style={{ textAlign: object.textAlign,
+      color: object.mode === 'direct' && object.kind === 'text' ? object.textColour : undefined }}>{object.text || object.name}</div>
   }
 }

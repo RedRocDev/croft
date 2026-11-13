@@ -17,7 +17,7 @@ const server = createServer(async (request, response) => {
   if (route === '/') {
     response.setHeader('content-type', 'text/html')
     response.end(dom)
-  } else if (['/storage', '/model', '/model.ts', '/writerLock.ts', '/stackPersistence.ts'].includes(route)) {
+  } else if (['/storage', '/model', '/model.ts', '/writerLock.ts', '/stackPersistence.ts', '/imagePersistence.ts', '/imageEdits.ts'].includes(route)) {
     const source = await readFile(path.join(base, route.slice(1).replace(/\.ts$/, '') + '.ts'), 'utf8')
     response.setHeader('content-type', 'text/javascript')
     response.end(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText)
