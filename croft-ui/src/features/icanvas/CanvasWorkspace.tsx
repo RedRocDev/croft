@@ -807,7 +807,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       {!sidebarOpen && <button ref={sidebarToggleRef} className="ic-icon" aria-label="Open sidebar" onClick={toggleSidebar}><PanelLeft /></button>}
       <nav className="ic-breadcrumbs" aria-label="Canvas breadcrumbs"><button onClick={goHome}>Home</button>
         {chain.map(item => <span key={item.id}><ChevronRight size={13} /><button title={item.name} aria-current={item.id === project.id ? 'page' : undefined}
-          onClick={() => item.id === project.id ? canEdit && show('details') : openCanvas(item.id)}><ProjectIcon project={item} /> <span>{item.name}</span></button></span>)}
+          onClick={() => item.id === project.id ? canEdit && show('details') : openCanvas(item.id)}><ProjectIcon project={item} /><span className="ic-breadcrumb-label">{item.name}</span></button></span>)}
       </nav>
       <div className="ic-header-actions">
         <button className="ic-icon" title="Undo" aria-label="Undo" disabled={!canUndo} onClick={() => step('undo')}><Undo2 /></button>

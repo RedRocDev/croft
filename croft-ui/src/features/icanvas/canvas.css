@@ -22,6 +22,9 @@
 .ic-breadcrumbs { display: flex; align-items: center; min-width: 0; flex: 1; gap: 3px; white-space: nowrap; }
 .ic-breadcrumbs > span { display: flex; min-width: 0; align-items: center; color: var(--quiet); }
 .ic-breadcrumbs button { padding: 4px 6px; font-size: 12px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; }
+.ic-breadcrumbs > span > button { display: flex; align-items: center; min-width: 0; gap: 3px; }
+.ic-breadcrumbs .ic-project-icon { line-height: 1; }
+.ic-breadcrumb-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .ic-breadcrumbs button[aria-current] { font-weight: 650; color: var(--ink); }
 .ic-breadcrumbs button:hover, .ic-icon:hover, .ic-button:not(.ic-primary):hover { background: var(--hover); color: var(--ink); }
 .ic-header-actions, .ic-row { display: flex; align-items: center; gap: 5px; }
