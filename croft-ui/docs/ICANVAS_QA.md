@@ -2,8 +2,33 @@
 
 13 November 2026 · Windows x64 10.0.26300 · Chrome 157.0.8103.78 · Node 24.22.1 · npm 12.2.2. Chrome ran with its sandbox enabled using isolated test profiles and synthetic content. [Feature matrix](ICANVAS_FEATURE_MATRIX.md) · [Architecture](ICANVAS_ARCHITECTURE.md) · [Export evidence](ICANVAS_EXPORT_QA.md)
 
+## Stabilisation verification
+
+| Check | Evidence |
+| --- | --- |
+| Two editors | A second tab could browse but could not save through the application storage API, even with a newer timestamp. Explicit takeover failed while the writer was open. Closing the writer released the lock. Taking over then showed the previous writer’s committed text. [Safety](../tests/icanvas-safety.mjs) |
+| Failed transactions and quota | An invalid parent write aborted and rolled back its staged asset. An injected native IndexedDB `QuotaExceededError` left the current draft visible, retained the saved head and both history types, and showed an error. After the fault was removed, Retry committed the draft. The host accepted a 4 MiB allocation under its experimental quota override, so this result concerns the injected failure path. [Safety](../tests/icanvas-safety.mjs) |
+| Abrupt Chrome process crash | Chrome DevTools deliberately terminated the browser process while a synthetic edit was waiting for autosave. Reopening the same disposable profile in a new Chrome process retained the committed head, a version and a recovery entry. The draft that had never reached storage was absent. [Safety](../tests/icanvas-safety.mjs) |
+| Streaming workspace backup | A 44 MiB payload wrote 46,150,806 bytes in 94 writes, at most 1 MiB per media write. Sampled Chrome JavaScript heap rose from 18,382,193 to 20,158,501 bytes, about 1.69 MiB, with reusable buffers. This measurement excludes native Blob, file and process memory. Chrome used its private filesystem writer as a test substitute for the OS save picker. [Backup browser test](../tests/icanvas-workspace-backup.mjs) |
+| Independent restore and failure | The backup restored into a fresh isolated Chrome context. Tested original attachment bytes, descendant and link IDs, object relationships, Trash, a saved version, and recoveries. Corruption and cancellation left destination data unchanged. Additive restore retained the existing starter project. No third-party HTTP traffic was observed. [Backup browser test](../tests/icanvas-workspace-backup.mjs) |
+| Linked files | Chrome’s drag protocol produced real permission-bearing host-file handles. Link In kept the handle and exact downloaded bytes with no copied Blob. Renaming the source produced a missing state. Restoring its original path and checking again brought it back. After a full browser restart, the same stored handle entered `prompt`. Tests separately injected denial and supplied a second real handle in place of the Windows chooser for Relink. Relink kept the canvas object ID and neither source file changed. [Linked files](../tests/icanvas-linked-files.mjs) |
+| Canvas input and precision | The Chromium input protocol generated a two-finger gesture from 100% to 200%, moving the midpoint with the world anchor. Both 0.25% and 6,400% wheel clamp points persisted. At world X=1e9 and Y=−2e9, both the selected target and its connector endpoint stayed within 2 CSS pixels of the anchor. A minimap click updated the camera with finite coordinates. Floating toolbar position survived reload. [Scale](../tests/icanvas-scale.mjs) |
+| 1,200 objects and 300 edges | Three headless development runs at 1440×950 took 269–376 ms from navigation to canvas readiness. The DOM mounted 48 objects before panning and 72 afterward. Median animation frame intervals were 16.7 ms. The 95th percentiles ranged from 16.8 to 33.3 ms, with a worst observed interval of 66.8 ms. The fixture mixes notes, text, shapes and strokes. These are frame intervals and exclude input-to-display latency and media-heavy boards. [Scale](../tests/icanvas-scale.mjs) |
+| Containers and metadata | Browser tests rotated and resized a frame containing another frame, a group and two connected shapes. Every descendant transformed once and undo returned exact persisted coordinates. The same test verified uploaded PNG icon bytes and description, and the icon’s display after reload. Geometry tests cover equal gaps on both axes and rotated frame growth. [Containers](../tests/icanvas-containers.mjs) |
+
+Run the additional tests from `croft-ui`, using the same Playwright and Chrome paths below. `icanvas-safety.mjs` uses Vite source modules, so run it against the dev server. Destructive operations in the tests are confined to disposable contexts and profiles.
+
+```powershell
+node tests/icanvas-safety.mjs $env:CROFT_QA_PLAYWRIGHT $env:CROFT_QA_CHROME
+node tests/icanvas-scale.mjs $env:CROFT_QA_PLAYWRIGHT $env:CROFT_QA_CHROME
+node tests/icanvas-containers.mjs
+node tests/icanvas-linked-files.mjs
+node tests/icanvas-workspace-backup.mjs $env:CROFT_QA_PLAYWRIGHT $env:CROFT_QA_CHROME
+```
+
 ## Build and tests
 
+- The stabilisation pass ran `npm test` with 32 passing tests and `npm run build` with 2,121 modules bundled. The final regression runs covered the existing Chrome workspace, IndexedDB, save dialogs, media and all six portable/visual export formats alongside the new tests above.
 - A fresh `npm ci --ignore-scripts` in an isolated directory installed 89 packages from the lockfile. The host supplied Node and a cached copy of npm because `npm` was absent from the default shell path. npm reported zero known vulnerabilities after updating fflate to 0.8.3. [fflate advisory and fix](https://github.com/advisories/GHSA-px8p-9vwx-vf98)
 - `npm test` passed 20 tests. Coverage includes inverse camera transforms, bounded cursor-centred zoom, rotated bounds, culling and snapping primitives, global chronological undo/redo with the 50-action cap, atomic compound edits, clone ID remapping, package rejection, visual SVG escaping, and native round trips.
 - `npm run build` passed TypeScript and the production Vite bundle. Vite emitted two ignored `use client` directives from the pre-existing Lucide package. The bundle uses local assets and includes third-party notices.
@@ -45,7 +70,6 @@ Set `CROFT_QA_SCREENSHOTS=screenshots` for the workspace run to save light, dark
 
 ## Open verification and limitations
 
-- Real filesystem picker grants, relink after file moves, permission across a browser restart, store eviction, out-of-space behavior, abrupt process exit and simultaneous tabs need separate tests. Site data belongs to the current origin and browser profile. Browser-defined storage eviction and background throttling still apply. Simultaneous same-project writes are timestamp-based and can overwrite work.
-- Shape and image handling, typography, keyboard-only operation, screen-reader behavior, focus restoration and precise editor/export parity have additional cases beyond the tested fixture. The phone viewport uses a bottom inspector drawer. Dedicated touch pinch remains open.
-- Frame reparenting preserves world coordinates. Full recursive frame transforms and equal-gap alignment remain open. Connector rendering uses object endpoints and does not route around other objects.
-- Large archives and raster outputs are bounded. The browser test checked one A4 fit and three SVG descendants. It did not certify panoramic readability, multi-page printing, package migrations or 1,000-object responsiveness. [Export limits](ICANVAS_ARCHITECTURE.md)
+- Genuine Windows picker interaction, browser-managed dismissal or manual revocation, physical disk exhaustion, storage eviction, and a process failure during a live IndexedDB commit remain unverified. A crash before a write reaches storage cannot guarantee preservation of those edits. Use the same browser profile and origin to reopen stored data.
+- Physical touchscreen, keyboard-only operation, screen-reader behavior, focus restoration and precise editor/export parity have additional cases beyond the tested fixture. Connector routing and freeform frame stretching remain out of scope for the verified transforms.
+- Native full workspace backups require a browser writable file picker and cap metadata at 64 MiB. Portable ZIP packages retain their size caps. Static exports were validated for one A4 fit and three SVG descendants. Panoramic readability, multi-page printing, migrations and stress testing on media-heavy scenes remain open. [Export limits](ICANVAS_ARCHITECTURE.md)
