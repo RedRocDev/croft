@@ -86,6 +86,7 @@
   min-height: 26px; padding: 4px 8px; display: flex; flex: 0 0 auto; align-items: center; gap: 6px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; font-weight: 650;
 }
+span.ic-object-title { display: block; text-align: center; }
 .ic-caption { padding: 2px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ic-item > img, .ic-item > video { flex: 1; min-height: 0; width: 100%; object-fit: contain; border-radius: 5px; }
 .ic-item > audio { margin: 4px 6px; min-width: 0; width: calc(100% - 12px); }
