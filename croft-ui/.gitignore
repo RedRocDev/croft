@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.pnpm-store/
+.pnpm-cache/
+.vite/
+server*.log
+
+# Local configuration and test artefacts
+.env
+.env.*
+!.env.example
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.DS_Store
+Thumbs.db
+
+# Local screenshot captures
+screenshots/*.png

@@ -32,4 +32,3 @@ The production build goes to `dist/`. The project uses the published WebAssembly
 Page content, settings examples, sharing, and templates are mock states. The prototype has no backend, storage, sign-in, real document editing, or synchronization. Theme and other preview selections reset when the page reloads.
 
 See [Mobbin references](REFERENCES.md) and [screenshots](screenshots/). Croft uses the unchanged original C logo and its padded display derivative. The cover is original generated workspace artwork, bundled locally.
-
