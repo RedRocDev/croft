@@ -1,6 +1,6 @@
 .ic-inspector {
   display: flex;
-  flex: 0 0 248px;
+  flex: 1;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
@@ -63,11 +63,18 @@
   flex: none;
 }
 
+.ic-inspector-shell[data-side="left"] .ic-inspector {
+  border-left: 0;
+  border-right: 1px solid var(--border);
+}
+
+.ic-inspector-tabs > .ic-inspector-dock,
 .ic-inspector-tabs > .ic-inspector-close {
   display: inline-grid;
-  margin-left: auto;
   padding: 0;
 }
+
+.ic-inspector-tabs > .ic-inspector-dock { margin-left: auto; }
 
 .ic-inspector-body {
   min-height: 0;

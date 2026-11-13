@@ -2,7 +2,7 @@ import { useId, useMemo, useState, type ReactNode } from 'react'
 import { ColourPicker } from './ColourPicker'
 import {
   ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronDown, ChevronRight,
-  Eye, EyeOff, Layers, Lock, SlidersHorizontal, Unlock, X,
+  Eye, EyeOff, Layers, Lock, PanelLeft, PanelRight, SlidersHorizontal, Unlock, X,
 } from 'lucide-react'
 import {
   canFlip, cardSide, colourForEdge, kinds, objectFlags,
@@ -327,6 +327,8 @@ function ObjectLayers({ objects, selected, select, update }: {
 export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings, mediaTools, ...cardActions }: InspectorProps) {
   const bodyId = useId()
   const panel = project.settings.panel
+  const nextSide = project.settings.inspectorSide === 'left' ? 'right' : 'left'
+  const dockLabel = `Dock inspector on the ${nextSide}`
   if (panel === 'closed') return null
 
   const object = selected.length === 1 ? selected[0] : undefined
@@ -339,6 +341,8 @@ export function CanvasInspector({ project, selected, activeEdge, select, update,
         onClick={() => settings({ panel: 'properties' })}><SlidersHorizontal /> Properties</button>
       <button type="button" aria-pressed={panel === 'layers'} aria-controls={bodyId}
         onClick={() => settings({ panel: 'layers' })}><Layers /> Layers</button>
+      <button type="button" className="ic-inspector-icon ic-inspector-dock" aria-label={dockLabel} title={dockLabel}
+        onClick={() => settings({ inspectorSide: nextSide })}>{nextSide === 'left' ? <PanelLeft /> : <PanelRight />}</button>
       <button type="button" className="ic-inspector-icon ic-inspector-close" aria-label="Close inspector"
         title="Close inspector" onClick={() => settings({ panel: 'closed' })}><X /></button>
     </div>

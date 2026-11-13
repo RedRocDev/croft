@@ -139,7 +139,17 @@ span.ic-object-title { display: block; text-align: center; }
 .ic-quick { z-index: 3; flex-wrap: wrap; max-width: calc(100% - 16px); }
 .ic-text-align, .ic-image-shortcuts { display: flex; margin-inline: 3px; padding-inline: 3px; border-inline: 1px solid var(--border); }
 .ic-context-menu { min-width: 168px; }
-.ic-inspector-shell { position: absolute; z-index: 5; top: 63px; right: 12px; max-height: calc(100% - 127px); display: flex; box-shadow: var(--ic-shadow); border-radius: 8px; }
+.ic-inspector-shell {
+  --ic-inspector-inset: 12px;
+  --ic-inspector-left: var(--ic-inspector-inset);
+  --ic-minimap-clearance: 122px;
+  position: absolute; z-index: 5; top: 63px; right: var(--ic-inspector-inset);
+  width: min(248px, calc(100% - var(--ic-inspector-left) - var(--ic-inspector-inset)));
+  max-height: calc(100% - 127px); display: flex; box-shadow: var(--ic-shadow); border-radius: 8px;
+}
+.ic-inspector-shell[data-side="left"] { right: auto; left: var(--ic-inspector-left); }
+.ic-inspector-shell[data-side="left"][data-toolbar-parked="true"] { --ic-inspector-left: 60px; }
+.ic-inspector-shell[data-side="left"][data-minimap="true"] { max-height: calc(100% - 63px - var(--ic-minimap-clearance)); }
 .ic-zoom { right: 12px; bottom: 12px; z-index: 3; }
 .ic-zoom-label { min-width: 48px; border: 0; }
 .ic-minimap { left: 12px; bottom: 12px; z-index: 3; padding: 5px; }
@@ -211,7 +221,7 @@ span.ic-object-title { display: block; text-align: center; }
   .ic-header-actions { gap: 2px; }
   .ic-breadcrumbs button { padding-inline: 3px; }
   .ic-header-actions .ic-button > span { display: none; }
-  .ic-inspector-shell { right: 6px; }
+  .ic-inspector-shell { --ic-inspector-inset: 6px; --ic-minimap-clearance: 97px; }
   .ic-minimap svg { width: 104px; height: 65px; }
 }
 @media (max-width: 799px) { .sidebar { position: fixed; } }
@@ -219,6 +229,7 @@ span.ic-object-title { display: block; text-align: center; }
   .ic-toolbar .ic-icon { min-width: 27px; padding: 0 4px; }
   .ic-breadcrumbs > span:not(:last-child) { display: none; }
   .ic-inspector-shell { top: auto; bottom: 53px; max-height: 43%; }
+  .ic-inspector-shell[data-side="left"][data-minimap="true"] { bottom: 93px; max-height: min(43%, calc(100% - 105px)); }
   .ic-minimap, .ic-zoom { bottom: 8px; }
 }
 @media (prefers-reduced-motion: reduce) { .ic-smooth { transition: none; } }

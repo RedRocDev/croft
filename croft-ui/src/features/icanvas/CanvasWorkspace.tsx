@@ -1520,7 +1520,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           <button className="ic-icon" aria-label="Zoom in" onClick={() => zoom(camera.zoom * 1.25)}><Plus /></button>
           <button className="ic-icon" aria-label="Fit All" title="Fit All" onClick={() => fit()}><Maximize /></button>
         </div>
-        {panelOpen && <div className="ic-inspector-shell" data-card-scroll onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge} mediaTools={mediaInspector}
+        {panelOpen && <div className="ic-inspector-shell" data-side={settings.inspectorSide ?? 'right'}
+          data-toolbar-parked={settings.toolbar === 'parked'} data-minimap={settings.minimap} data-card-scroll
+          onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge} mediaTools={mediaInspector}
           select={id => {
             const object = indexed.map.get(id)
             if (object && object.parentId && indexed.map.get(object.parentId)?.stack) revealCard(object)

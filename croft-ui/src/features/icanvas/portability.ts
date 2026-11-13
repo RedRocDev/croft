@@ -150,6 +150,7 @@ function readSettings(value: unknown): CanvasSettings {
     showEdges: { direction: boolean(visibility.direction), connection: boolean(visibility.connection), relationship: boolean(visibility.relationship) },
     toolbar: oneOf(data.toolbar, ['floating', 'parked']), toolbarPoint: readPoint(data.toolbarPoint),
     panel: oneOf(data.panel, ['properties', 'layers', 'closed']),
+    ...(data.inspectorSide !== undefined && { inspectorSide: oneOf(data.inspectorSide, ['left', 'right']) }),
   }
 }
 

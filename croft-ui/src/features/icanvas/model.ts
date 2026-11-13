@@ -29,6 +29,7 @@ export type CanvasSettings = {
   grid: Grid; minimap: boolean; snapGrid: boolean; snapObjects: boolean; guides: boolean
   showEdges: Record<EdgeKind, boolean>; toolbar: 'floating' | 'parked'; toolbarPoint: Point
   panel: 'properties' | 'layers' | 'closed'
+  inspectorSide?: 'left' | 'right'
 }
 export type CanvasProject = {
   id: string; parentId: string | null; name: string; description: string; icon: string; coverAssetId?: string; iconAssetId?: string
