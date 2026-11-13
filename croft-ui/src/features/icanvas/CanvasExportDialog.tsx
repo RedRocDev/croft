@@ -52,6 +52,7 @@ export function CanvasExportDialog({ close, projects, project, selectedIds, dark
         <p><strong>{inventory.projectCount} canvas{inventory.projectCount === 1 ? '' : 'es'} in scope.</strong></p>
         {editable ? <>
           <p>{inventory.included.length} embedded files ({formatMiB(inventory.bytes)}) before package overhead. Editable files include original image pixels and reversible edits. Versions and recoveries stay in the workspace.</p>
+          {inventory.smartlinks > 0 && <p>{inventory.smartlinks} Smartlink reference{inventory.smartlinks === 1 ? '' : 's'} are included without provider media. Provider permissions are excluded; restored links need internet access and a separate explicit consent.</p>}
           <p>{inventory.relink.length} linked files need relinking, {inventory.missing.length} files are already missing, and {inventory.outside.length} canvas links point outside the scope. {inventory.externalPages.length} Croft page links point outside iCanvas.</p>
           {inventory.relink.length > 0 && <details><summary>Files that require relinking</summary><ul>{inventory.relink.slice(0, 30).map(asset => <li key={asset.id}>{asset.name}</li>)}</ul>
             {inventory.relink.length > 30 && <p>{inventory.relink.length - 30} more links are listed in the package.</p>}
@@ -62,6 +63,7 @@ export function CanvasExportDialog({ close, projects, project, selectedIds, dark
           {inventory.overLimit.length > 0 && <ul aria-label="Files above the portable limit">{inventory.overLimit.slice(0, 30).map(asset => <li key={asset.id}>{asset.name} ({formatMiB(asset.size)})</li>)}</ul>}
         </> : <>
           <p>Visual exports show visible card faces and the current stack layout. Cropped or masked images are flattened to visible pixels. Available audio waveforms are shown at the start of the track. Audio beyond the visual export budget, video and unavailable media appear as labels.</p>
+          {inventory.visibleSmartlinks > 0 && <p>{inventory.visibleSmartlinks} visible Smartlink{inventory.visibleSmartlinks === 1 ? '' : 's'} become local labelled cards with their saved title, URL and notes. No external requests, scripts or active embeds are included.</p>}
           <p>Source images are limited to {formatMiB(visualExportLimits.sourceBytes)} each. Edited image output is capped at {visualExportLimits.editedSide}px per side, with a separate per-canvas image budget. Final canvas output is capped at {visualExportLimits.canvasSide}px per side and 12 megapixels.</p>
           {linkedImages > 0 && <p>Export needs read access to {linkedImages} linked edited image{linkedImages === 1 ? '' : 's'}. Restore file access or relink before exporting.</p>}
           {blockedImages.length > 0 && <section aria-label="Edited images blocking visual export">

@@ -8,7 +8,7 @@ import { assertStyledAudioAsset, styledAudioAssetIds } from './audioAppearance.t
 export type WorkspaceBackupInventory = {
   projects: number; trashed: number; versions: number; recoveries: number; bytes: number;
   copied: CanvasAsset[]; links: CanvasAsset[]; absent: CanvasAsset[]; orphans: number;
-  externalPages: number; unresolvedCanvases: number;
+  externalPages: number; unresolvedCanvases: number; smartlinks: number;
 }
 
 type BackupAsset = Omit<CanvasAsset, 'blob' | 'handle'> & { copied: boolean; linked?: boolean }
@@ -21,6 +21,7 @@ const magicV1 = encoder.encode('CROFT WORKSPACE BACKUP 1\n')
 const magicV2 = encoder.encode('CROFT WORKSPACE BACKUP 2\n')
 const magicV3 = encoder.encode('CROFT WORKSPACE BACKUP 3\n')
 const magicV4 = encoder.encode('CROFT WORKSPACE BACKUP 4\n')
+const magicV5 = encoder.encode('CROFT WORKSPACE BACKUP 5\n')
 const decoder = new TextDecoder('utf-8', { fatal: true })
 const metadataLimit = 64 * 1024 ** 2
 const mediaChunk = 1024 ** 2
@@ -84,6 +85,7 @@ export function inspectWorkspaceBackup(snapshot: WorkspaceStorageState): Workspa
     copied, links, absent, orphans: snapshot.assets.filter(asset => !used.has(asset.id)).length,
     externalPages: scenes.reduce((count, scene) => count + scene.objects.filter(object => object.kind === 'page' && object.targetId).length, 0),
     unresolvedCanvases: scenes.reduce((count, scene) => count + scene.objects.filter(object => object.kind === 'canvas' && object.targetId && !projects.has(object.targetId)).length, 0),
+    smartlinks: scenes.reduce((total, scene) => total + scene.objects.reduce((count, object) => count + Number(!!object.smartlink) + Number(!!object.back?.smartlink), 0), 0),
   }
 }
 
@@ -187,7 +189,7 @@ export function prepareWorkspaceBackup(snapshot: WorkspaceStorageState) {
   const bytes = encoder.encode(JSON.stringify({ projects, versions, recoveries, assets }))
   check(bytes.byteLength <= metadataLimit, 'Workspace history and canvas metadata exceed the 64 MiB backup header limit. Data were not backed up.')
   metadata(bytes, version)
-  const magic = version === 4 ? magicV4 : version === 3 ? magicV3 : version === 2 ? magicV2 : magicV1
+  const magic = version === 5 ? magicV5 : version === 4 ? magicV4 : version === 3 ? magicV3 : version === 2 ? magicV2 : magicV1
   return { manifest: bytes, magic, blobs: snapshot.assets.flatMap(asset => asset.blob ? [asset.blob] : []) }
 }
 
@@ -248,7 +250,7 @@ export async function parseWorkspaceBackup(file: Blob, options: TransferOptions 
     return bytes
   }
   const magic = await read(magicV1.length)
-  const version = bytesEqual(magic, magicV4) ? 4 : bytesEqual(magic, magicV3) ? 3 : bytesEqual(magic, magicV2) ? 2 : 1
+  const version = bytesEqual(magic, magicV5) ? 5 : bytesEqual(magic, magicV4) ? 4 : bytesEqual(magic, magicV3) ? 3 : bytesEqual(magic, magicV2) ? 2 : 1
   check(version !== 1 || bytesEqual(magic, magicV1), 'Unsupported Croft workspace backup format.')
   const length = new DataView((await read(4)).buffer).getUint32(0, true)
   check(length > 0 && length <= metadataLimit, 'Workspace backup header is oversized.')

@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import RBush from 'rbush'
 import {
   ArrowDownToLine, ArrowRight, AudioLines, Box, ChevronDown, ChevronRight, Circle, Copy, Crop, Eye, FileText, GripHorizontal, Hand, Image,
   Layers, Lock, LockOpen, Maximize, Minus, MoreHorizontal, MousePointer2, PanelLeft, PenLine, Play, Plus, Redo2, RotateCw,
-  Save, Search, SlidersHorizontal, Sparkles, Square, StickyNote, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, Type, Undo2, Unlink, X,
+  Link2, Save, Search, SlidersHorizontal, Sparkles, Square, StickyNote, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, Type, Undo2, Unlink, X,
 } from 'lucide-react'
 import { ancestors, canFlip, cardFace, cardSide, colourForEdge, createProject, descendants, edgeLabels, imageAssetId, kinds, makeObject, objectFlags, palette, searchCanvasObjects,
   type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type CardSide, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
@@ -23,6 +23,7 @@ import { CanvasExportDialog } from './CanvasExportDialog'
 import { ImageTools } from './ImageTools'
 import { AudioProperties } from './AudioProperties'
 import type { AudioAppearance } from './audioAppearance'
+import { parseSmartlink, providerLabel, readSmartlink, type SmartlinkContent, type SmartlinkMode } from './smartlinks'
 import { defaultImageEdits, imageEffectInsets, imageFrameSize, readImageEdits, type ImageEdits } from './imageEdits'
 import { getAsset } from './storage'
 import { droppedCanvasFiles, ImportDialog, pickCanvasFiles, type CanvasFile, type CanvasPreparedAsset } from './ImportDialog'
@@ -34,7 +35,7 @@ import './stacks.css'
 
 type Tool = 'select' | 'hand' | 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'frame' | EdgeKind
 type Popup = 'save' | 'view' | 'tools' | 'add' | 'edges' | 'shapes' | 'project' | 'zoom' | null
-type Modal = 'details' | 'subcanvas' | 'move' | 'trash' | 'find' | 'versions' | 'checkpoint' | 'recovery' | 'copy' | 'export' | 'backup' | 'presentation' | 'embed' | 'link' | 'preview' | 'deleteStack' | null
+type Modal = 'details' | 'subcanvas' | 'move' | 'trash' | 'find' | 'versions' | 'checkpoint' | 'recovery' | 'copy' | 'export' | 'backup' | 'presentation' | 'embed' | 'link' | 'preview' | 'deleteStack' | 'smartlink' | null
 type Indexed = { minX: number; minY: number; maxX: number; maxY: number; object: CanvasObject; index: number }
 type Gesture = { start: Point; camera: Camera; pointerId: number } & (
   { kind: 'pan' | 'marquee' } | { kind: 'move'; objects: CanvasObject[]; pickup?: CanvasObject; drop?: string; preview: CanvasObject[] } |
@@ -67,11 +68,11 @@ function translateObject(object: CanvasObject, dx: number, dy: number): CanvasOb
     frameBase: frameBase && { ...frameBase, x: frameBase.x + dx, y: frameBase.y + dy } }
 }
 
-export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef, toggleSidebar, openCanvas, goHome, openPage, jump, dark }: {
+export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef, toggleSidebar, openCanvas, goHome, openPage, jump, dark, openPrivacy, suspendEmbeds }: {
   project: CanvasProject; store: ReturnType<typeof useCanvasProjects>; sidebarOpen: boolean
   sidebarToggleRef: RefObject<HTMLButtonElement | null>; toggleSidebar: () => void
   openCanvas: (id: string, objectId?: string, side?: CardSide) => void; goHome: () => void; openPage: (id: string) => void
-  jump?: { id: string; event: number; side?: CardSide }; dark: boolean
+  jump?: { id: string; event: number; side?: CardSide }; dark: boolean; openPrivacy: () => void; suspendEmbeds?: boolean
 }) {
   const { projects, update, write, flush, refresh, status, error } = store
   const canEdit = store.access === 'writer'
@@ -80,6 +81,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const fileInput = useRef<HTMLInputElement>(null)
   const toolbar = useRef<HTMLDivElement>(null)
   const pointer = useRef<Point>({ x: 0, y: 0 })
+  const lastCanvasPointer = useRef<Point | undefined>(undefined)
   const gesture = useRef<Gesture | null>(null)
   const touches = useRef(new Map<number, Point>())
   const pinch = useRef<{ ids: number[]; center: Point; distance: number; camera: Camera; latest: Camera } | undefined>(undefined)
@@ -94,6 +96,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const [fromId, setFromId] = useState('')
   const [popup, setPopup] = useState<Popup>(null)
   const [modal, setModal] = useState<Modal>(null)
+  const [smartlinkTarget, setSmartlinkTarget] = useState<{ id?: string; side: CardSide; point?: Point }>()
+  const [smartlinkForm, setSmartlinkForm] = useState({ url: '', title: '', notes: '' })
+  const [smartlinkBatch, setSmartlinkBatch] = useState<SmartlinkContent[]>()
+  const [smartlinkError, setSmartlinkError] = useState('')
+  const [smartlinkPriority, setSmartlinkPriority] = useState<string>()
   const [dragged, setDragged] = useState<CanvasObject[]>([])
   const [marquee, setMarquee] = useState<Rect>()
   const [guides, setGuides] = useState<Partial<Point>>()
@@ -203,11 +210,30 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   for (const object of dragged) if (!displayed.has(object.id) && !['group', 'stack'].includes(object.kind) && !indexed.flags.get(object.id)?.hidden && !displayedPiles.obscured.has(object.id)) rendered.push(projected(object))
   for (const [id, card] of displayedPiles.cards) if (indexed.pileLayout.obscured.has(id) && !displayed.has(id)) rendered.push(card)
   const renderedIds = new Set(rendered.map(object => object.id))
+  const activeSmartlinkIds = useMemo(() => {
+    if (!size.width || suspendEmbeds || modal || files || editing || editingBack) return new Set<string>()
+    const topLeft = screenToWorld({ x: 0, y: 0 }, camera)
+    const bottomRight = screenToWorld({ x: size.width, y: size.height }, camera)
+    const view = { ...topLeft, width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y }
+    const candidates = rendered.flatMap(object => {
+      const link = cardSide(object) === 'back' ? object.back?.smartlink : object.smartlink
+      if (!link || link.provider === 'website' || link.mode !== 'embed') return []
+      if (indexed.pileLayout.obscured.has(object.id) || indexed.flags.get(object.id)?.hidden) return []
+      const box = rotatedBounds(object, object.rotation)
+      if (!intersects({ x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top }, view) ||
+          object.width * camera.zoom < 240 || object.height * camera.zoom < (cardSide(object) === 'back' ? 420 : 340)) return []
+      return [object.id]
+    })
+    if (smartlinkPriority && candidates.includes(smartlinkPriority)) candidates.sort((a, b) => Number(b === smartlinkPriority) - Number(a === smartlinkPriority))
+    return new Set(candidates.slice(0, 4))
+  }, [rendered, size.width, size.height, camera.x, camera.y, camera.zoom, smartlinkPriority, suspendEmbeds, modal, files, editing, editingBack])
   const chosen = selected.flatMap(id => {
     const object = indexed.map.get(id)
     return object && !indexed.flags.get(id)?.hidden ? [object] : []
   })
   const singleSelection = chosen.length === 1 ? chosen[0] : undefined
+  const contextSide = singleSelection ? cardSide(singleSelection) : 'front'
+  const contextSmartlink = singleSelection ? (contextSide === 'back' ? singleSelection.back?.smartlink : singleSelection.smartlink) : undefined
   const imageSide = singleSelection ? cardSide(singleSelection) : 'front'
   const selectedFace = singleSelection ? cardFace(singleSelection) : undefined
   const inspectAssetId = selectedFace && (imageSide === 'back' || singleSelection?.kind === 'file') ? selectedFace.assetId : undefined
@@ -310,6 +336,33 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   function localPoint(event: { clientX: number; clientY: number }) {
     const box = stage.current?.getBoundingClientRect()
     return { x: event.clientX - (box?.left ?? 0), y: event.clientY - (box?.top ?? 0) }
+  }
+
+  function pasteSmartlink(event: ReactClipboardEvent<HTMLDivElement>) {
+    if (event.defaultPrevented || !canEdit || play || modal || files || editing || editingBack || event.clipboardData.files.length) return
+    const path = event.nativeEvent.composedPath()
+    if (path.some(node => node instanceof HTMLElement && (node.isContentEditable || node.matches('input, textarea, select, [role="dialog"]') ||
+      !!node.closest('input, textarea, select, [contenteditable], [role="dialog"], dialog, .ic-dialog')))) return
+    if ([...event.clipboardData.items].some(item => item.type.startsWith('image/'))) return
+    const text = event.clipboardData.getData('text/plain').trim()
+    const single = parseSmartlink(text)
+    const point = lastCanvasPointer.current
+    if (single) {
+      event.preventDefault()
+      createSmartlinkObjects([single], point)
+      return
+    }
+    const tokens = text.split(/\s+/).filter(Boolean)
+    if (tokens.length < 2) return
+    const links = tokens.map(token => parseSmartlink(token))
+    if (links.some(link => !link)) return
+    event.preventDefault()
+    if (tokens.length > 10) { setFeedback('Paste up to 10 links at a time. Split the batch; Croft did not create any objects.'); return }
+    setSmartlinkTarget({ side: 'front', point })
+    setSmartlinkBatch(links as SmartlinkContent[])
+    setSmartlinkForm({ url: '', title: '', notes: '' })
+    setSmartlinkError('')
+    show('smartlink')
   }
 
   function pick(id: string, multiple = false) {
@@ -641,6 +694,84 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     return object
   }
 
+  function openSmartlinkEditor(object?: CanvasObject, side: CardSide = 'front', point?: Point) {
+    const existing = object ? (side === 'back' ? object.back?.smartlink : object.smartlink) : undefined
+    setSmartlinkTarget({ id: object?.id, side, point })
+    setSmartlinkForm({ url: existing?.canonicalUrl ?? '', title: existing?.title ?? '', notes: existing?.notes ?? '' })
+    setSmartlinkBatch(undefined)
+    setSmartlinkError('')
+    show('smartlink')
+  }
+
+  function createSmartlinkObjects(links: SmartlinkContent[], point?: Point) {
+    if (!canEdit || !links.length || links.length > 10) return
+    const screen = point ?? lastCanvasPointer.current ?? { x: size.width * .5, y: size.height * .45 }
+    const base = screenToWorld(screen, camera)
+    const created = links.map((smartlink, index) => {
+      const nextPoint = project.settings.snapGrid && placement === 'smart'
+        ? placePoint({ x: base.x + index % 2 * 400, y: base.y + Math.floor(index / 2) * 300 }, placement)
+        : { x: base.x + index % 2 * 400, y: base.y + Math.floor(index / 2) * 300 }
+      const container = frameAt(nextPoint)
+      return makeObject('smartlink', nextPoint, { name: smartlink.title || providerLabel(smartlink.provider), parentId: container?.id, smartlink })
+    })
+    edit([...project.objects, ...created])
+    setSelected(created.map(object => object.id))
+    setEdgeId('')
+  }
+
+  function applySmartlinkEditor() {
+    if (!canEdit) { setSmartlinkError('This canvas is read-only in the current tab.'); return }
+    try {
+      if (smartlinkBatch) {
+        createSmartlinkObjects(smartlinkBatch, smartlinkTarget?.point)
+        setModal(null)
+        return
+      }
+      const parsed = parseSmartlink(smartlinkForm.url)
+      if (!parsed) throw new Error('Enter one valid HTTP or HTTPS link.')
+      const target = smartlinkTarget?.id ? project.objects.find(object => object.id === smartlinkTarget.id) : undefined
+      const side = smartlinkTarget?.side ?? 'front'
+      const prior = target ? (side === 'back' ? target.back?.smartlink : target.smartlink) : undefined
+      if (prior && prior.canonicalUrl !== parsed.canonicalUrl && !window.confirm('Replace this Smartlink URL? Its notes and object placement will be kept.')) return
+      const mode = prior?.provider === parsed.provider ? prior.mode : parsed.mode
+      const smartlink = readSmartlink({ ...parsed, mode, title: smartlinkForm.title.trim() || undefined, notes: smartlinkForm.notes.trim() || undefined })
+      if (!target) {
+        createSmartlinkObjects([smartlink], smartlinkTarget?.point)
+        setModal(null)
+        return
+      }
+      if (!validForEdit(target)) throw new Error('Unlock this object before changing its Smartlink.')
+      const face = cardFace(target, side)
+      if (face.assetId && !face.smartlink && !window.confirm(`Replace the ${side} face attachment with this Smartlink? Undo restores the attachment.`)) return
+      if (side === 'back') changeObject(target, { back: { ...face, assetId: undefined, imageEdits: undefined, audioAppearance: undefined, smartlink } })
+      else changeObject(target, { assetId: undefined, imageEdits: undefined, audioAppearance: undefined, smartlink })
+      setModal(null)
+    } catch (reason) { setSmartlinkError(reason instanceof Error ? reason.message : String(reason)) }
+  }
+
+  function changeSmartlinkMode(object: CanvasObject, side: CardSide, mode: SmartlinkMode) {
+    const current = side === 'back' ? object.back?.smartlink : object.smartlink
+    if (!current || !validForEdit(object) || current.mode === mode) return
+    const next = readSmartlink({ ...current, mode })
+    changeObject(object, side === 'back' ? { back: { ...cardFace(object, 'back'), smartlink: next } } : { smartlink: next })
+  }
+
+  function updateSmartlink(object: CanvasObject, side: CardSide, patch: Partial<SmartlinkContent>) {
+    const current = side === 'back' ? object.back?.smartlink : object.smartlink
+    if (!current || !validForEdit(object)) return
+    try {
+      const next = readSmartlink({ ...current, ...patch })
+      changeObject(object, side === 'back' ? { back: { ...cardFace(object, 'back'), smartlink: next } } : { smartlink: next })
+    } catch (reason) { onError(reason) }
+  }
+
+  function removeSmartlink(object: CanvasObject, side: CardSide) {
+    if (!validForEdit(object)) return
+    if (side === 'back') changeObject(object, { back: { ...cardFace(object, 'back'), smartlink: undefined } })
+    else if (object.kind === 'smartlink') changeObject(object, { kind: 'note', smartlink: undefined })
+    else changeObject(object, { smartlink: undefined })
+  }
+
   function connect(id: string) {
     if (!(tool in edgeLabels)) return
     if (!fromId) { setFromId(id); setFeedback('Select the destination object.'); return }
@@ -679,6 +810,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       return
     }
     const screen = localPoint(event)
+    pointer.current = screen
+    lastCanvasPointer.current = screen
     const world = screenToWorld(screen, camera)
     setPopup(null)
     setContextPoint(undefined)
@@ -835,6 +968,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   function move(event: ReactPointerEvent<HTMLDivElement>) {
     const screen = localPoint(event)
     pointer.current = screen
+    lastCanvasPointer.current = screen
     if (touches.current.has(event.pointerId)) touches.current.set(event.pointerId, screen)
     const activePinch = pinch.current
     if (activePinch) {
@@ -1018,6 +1152,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
 
   async function addFiles(replace = '', side: CardSide = 'front') {
     if (!canEdit) return
+    const object = replace ? indexed.map.get(replace) : undefined
+    const existingLink = object ? (side === 'back' ? object.back?.smartlink : object.smartlink) : undefined
+    if (existingLink && !window.confirm(`Replace the ${side} face Smartlink with a local attachment? Undo restores the link.`)) return
     setPopup(null)
     setReplaceId(replace)
     setReplaceSide(side)
@@ -1039,7 +1176,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       if (!object || !validForEdit(object) || !canFlip(object) || assets.length !== 1) throw new Error('Choose one attachment for an editable card.')
       if (object.back?.imageEdits && !assets[0].mime.startsWith('image/')) throw new Error('Choose an image to keep these edits, or reset the Back image edits before replacing it.')
       if (object.back?.audioAppearance && !assets[0].mime.startsWith('audio/')) throw new Error('Choose audio to keep this appearance, or reset the Back audio appearance before replacing it.')
-      const back = { ...cardFace(object, 'back'), assetId: assets[0].id }
+      const { smartlink: _oldSmartlink, ...backFields } = cardFace(object, 'back')
+      const back = { ...backFields, assetId: assets[0].id }
       const next = { ...project, objects: project.objects.map(item => item.id === replaceId ? { ...item, back } : item), updatedAt: Date.now() }
       await write([next], assets)
       record(next)
@@ -1048,7 +1186,12 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const begin = screenToWorld(pointer.current.x ? pointer.current : { x: size.width * .47, y: size.height * .43 }, camera)
     const origin = placement === 'smart' ? placePoint(begin, placement) : begin
     if (replaceId && indexed.map.get(replaceId)?.imageEdits && !assets[0].mime.startsWith('image/')) throw new Error('Choose an image to keep these edits.')
-    const edited = replaceId ? project.objects.map(object => object.id === replaceId ? { ...object, assetId: assets[0].id } : object) : project.objects
+    const edited = replaceId ? project.objects.map(object => {
+      if (object.id !== replaceId) return object
+      const { smartlink: _oldSmartlink, ...objectFields } = object
+      return { ...objectFields, ...(object.kind === 'smartlink' ? { kind: shapeForAsset(assets[0]) } : {}), assetId: assets[0].id,
+        imageEdits: undefined, audioAppearance: undefined }
+    }) : project.objects
     const added: CanvasObject[] = []
     if (!replaceId) {
       let index = 0
@@ -1072,7 +1215,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       const original = project.objects.find(object => object.id === replaceId)
       const originalAsset = original?.kind === 'file' && original.assetId ? await getAsset(original.assetId) : undefined
       const fileWithAudio = replaced?.kind === 'file' && assets[0].mime.startsWith('audio/') && (replaced.audioAppearance || originalAsset?.mime.startsWith('audio/'))
-      if (assets.length !== 1 || !replaced || (!fileWithAudio && shapeForAsset(assets[0]) !== replaced.kind)) throw new Error('Choose one matching media file.')
+      if (assets.length !== 1 || !replaced || (replaced.kind !== 'smartlink' && !fileWithAudio && shapeForAsset(assets[0]) !== replaced.kind)) throw new Error('Choose one matching media file.')
     }
     const changes = new Map<string, CanvasObject>()
     const frame = frameAt(begin)
@@ -1219,7 +1362,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     }} />
     <div className="ic-stage" ref={stage} role="region" aria-label="Canvas" data-tool={tool} data-dragover={dropActive} data-rotating={rotating}
       style={{ '--ic-grid-size': gridSize + 'px', '--ic-grid-x': camera.x % gridSize + 'px', '--ic-grid-y': camera.y % gridSize + 'px' } as CSSProperties}
-      data-grid={activeSettings.grid} onPointerDownCapture={trackTouch} onPointerDown={event => start(event)} onPointerMove={move}
+      data-grid={activeSettings.grid} onPointerDownCapture={trackTouch} onPointerDown={event => start(event)} onPointerMove={move} onPaste={pasteSmartlink}
       onPointerUp={event => endPointer(event)} onPointerCancel={event => endPointer(event, false)}
       onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); if (canEdit) setDropActive(true) } }}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false) }}
@@ -1249,6 +1392,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           const locked = indexed.flags.get(object.id)?.locked
           const card = object.mode === 'card'
           const isBack = cardSide(object) === 'back'
+          const faceSmartlink = isBack ? object.back?.smartlink : object.smartlink
           const isMember = !!object.parentId && !!indexed.map.get(object.parentId)?.stack
           const audioFace = object.kind === 'audio' && !isBack || !!cardFace(object).audioAppearance
           const atThumbnailScale = Math.max(object.width, object.height) * camera.zoom < (audioFace ? 52 : 18) && !picked
@@ -1278,9 +1422,13 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
             } }}
             data-testid={'canvas-object-' + object.id} aria-label={object.name}>
             {atThumbnailScale ? <div className={audioFace ? 'ic-item-swatch ic-audio-swatch' : 'ic-item-swatch'}>{audioFace && <AudioLines aria-hidden="true" />}</div> : object.kind === 'frame' ? <span className="ic-frame-label"><Box size={14} /> {object.name}{object.collapsed && <small>{project.objects.filter(item => item.parentId === object.id).length} items</small>}</span> : <>
-              {!isBack && card && !['canvas', 'page', 'file', 'note'].includes(object.kind) && <span className="ic-object-title">{object.name}</span>}
+              {faceSmartlink ? <span className="ic-smartlink-grab"><GripHorizontal size={13} />{object.name}</span> :
+                !isBack && card && !['canvas', 'page', 'file', 'note'].includes(object.kind) && <span className="ic-object-title">{object.name}</span>}
               <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit && !locked} dark={dark} previewScale={previewScale}
                 replace={() => void addFiles(object.id)} replaceBack={() => void addFiles(object.id, 'back')}
+                activeSmartlink={activeSmartlinkIds.has(object.id)} smartlinkCanPlay={object.width * camera.zoom >= 240 && object.height * camera.zoom >= (isBack ? 420 : 340)}
+                canEdit={canEdit && !locked} onSmartlinkMode={changeSmartlinkMode} onSmartlinkEdit={openSmartlinkEditor}
+                onSmartlinkPrivacy={openPrivacy} zoomToPlay={item => setCamera(fitViewport([item], size, { padding: 72, max: 2.3 }))}
                 imageDraft={mediaKey && mediaKey === imageKey && imageDraft?.key === mediaKey ? imageDraft.edits : undefined}
                 compareImage={!!mediaKey && mediaKey === imageKey && compareImage === mediaKey} />
               {!isBack && card && object.caption && <small className="ic-caption">{object.caption}</small>}
@@ -1427,6 +1575,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
             {popup === 'add' && <div className="ic-menu">{menuButtons([
               action('Add files', () => void addFiles(), <Image />), action('New SubCanvas', () => show('subcanvas'), <Layers />),
               action('Link existing canvas', () => show('link'), <Layers />),
+              action('Smartlink', () => openSmartlinkEditor(undefined, 'front', lastCanvasPointer.current), <Link2 />),
               action('Embed Croft page', () => show('embed'), <FileText />),
             ])}</div>}
           </div>
@@ -1499,6 +1648,15 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           style={{ left: Math.max(2, Math.min(size.width - 180, contextPoint.x)), top: Math.max(2, Math.min(size.height - 106, contextPoint.y)) }}>
           {stackingSelection ? <button disabled={!stackable} title={stackHint} onClick={stackSelection}>Stack Cards</button> : <>
           {canFlip(chosen[0]) && <button onClick={() => { flipCard(chosen[0]); setContextPoint(undefined) }}>Show {cardSide(chosen[0]) === 'back' ? 'Front' : 'Back'}</button>}
+          {canEdit && !['frame', 'group', 'stack'].includes(chosen[0].kind) && <button onClick={() => openSmartlinkEditor(chosen[0], cardSide(chosen[0]))}>
+            {((cardSide(chosen[0]) === 'back' ? chosen[0].back?.smartlink : chosen[0].smartlink) ? 'Edit' : 'Add') + ' Smartlink on ' + (cardSide(chosen[0]) === 'back' ? 'Back' : 'Front')}
+          </button>}
+          {contextSmartlink && <>
+            <hr />
+            {([['embed', 'Embed'], ['preview', 'Preview Card'], ['link', 'Link Only']] as const).map(([mode, label]) => <button key={mode}
+              disabled={!validForEdit(chosen[0]) || mode === 'embed' && contextSmartlink.provider === 'website'} aria-pressed={contextSmartlink.mode === mode}
+              onClick={() => { changeSmartlinkMode(chosen[0], contextSide, mode); setContextPoint(undefined) }}>{label}</button>)}
+          </>}
           {chosen[0].parentId && indexed.map.get(chosen[0].parentId)?.stack && <button onClick={() => { removeFromStack(chosen[0]); setContextPoint(undefined) }}>Remove from Stack</button>}
           <button disabled={!validForEdit(chosen[0])} onClick={() => {
             changeObject(chosen[0], { mode: chosen[0].mode === 'card' ? 'direct' : 'card' })
@@ -1529,6 +1687,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} settings={updateSettings} flipCard={flipCard}
           editBack={object => { if (validForEdit(object)) setEditingBack(object.id) }} attachBack={object => void addFiles(object.id, 'back')}
           removeBackAttachment={object => changeObject(object, { back: { ...cardFace(object, 'back'), assetId: undefined, imageEdits: undefined, audioAppearance: undefined } })}
+          editSmartlink={(object, side) => { if (validForEdit(object)) openSmartlinkEditor(object, side) }}
+          updateSmartlink={updateSmartlink} removeSmartlink={removeSmartlink}
           selectStackMember={(_, member) => revealCard(member)} removeFromStack={removeFromStack} setStackFanned={changeStackLayout}
           unstack={object => stackAction(() => unstackAll(project.objects, object.id), object.stack?.order[0])}
           deleteStack={object => { setStackToDelete(object.id); show('deleteStack') }} />}
@@ -1601,6 +1761,34 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         }}><strong>{title}</strong><small>{location} · {kinds[object.kind]}</small><span>{description}</span></button>)}
           {query && !matches.length && <p>No matching canvas objects.</p>}</div>
       </div>
+    </CanvasDialog>}
+    {modal === 'smartlink' && <CanvasDialog title={smartlinkBatch ? `Add ${smartlinkBatch.length} Smartlinks` : smartlinkTarget?.id ? 'Edit Smartlink' : 'Add Smartlink'} close={() => setModal(null)}>
+      <form className="ic-form" onSubmit={event => { event.preventDefault(); applySmartlinkEditor() }}>
+        {smartlinkBatch ? <>
+          <p>Review these links. Croft creates one object per link in one undo step. External content stays unloaded until you allow a provider.</p>
+          <ul className="ic-smartlink-batch">{smartlinkBatch.map((link, index) => <li key={`${link.canonicalUrl}-${index}`}><strong>{providerLabel(link.provider)}</strong><span>{link.canonicalUrl}</span></li>)}</ul>
+        </> : <>
+          <label>URL<input type="url" value={smartlinkForm.url} autoFocus required maxLength={2048}
+            placeholder="https://youtu.be/… or https://x.com/…" onChange={event => {
+              const url = event.currentTarget.value
+              setSmartlinkForm(current => ({ ...current, url }))
+            }} /></label>
+          <label>Title (optional)<input type="text" maxLength={512} value={smartlinkForm.title}
+            onChange={event => {
+              const title = event.currentTarget.value
+              setSmartlinkForm(current => ({ ...current, title }))
+            }} /></label>
+          <label>Notes (optional)<textarea rows={3} maxLength={16_384} value={smartlinkForm.notes}
+            onChange={event => {
+              const notes = event.currentTarget.value
+              setSmartlinkForm(current => ({ ...current, notes }))
+            }} /></label>
+          <p className="ic-colour-hint">Only YouTube videos and public X posts can use live embeds. Other web addresses stay local bookmarks. Providers are not contacted until you allow them.</p>
+        </>}
+        {smartlinkError && <p role="alert">{smartlinkError}</p>}
+        <div className="ic-dialog-actions"><button type="button" className="ic-button" onClick={() => setModal(null)}>Cancel</button>
+          <button type="submit" className="ic-button ic-primary">{smartlinkBatch ? `Add ${smartlinkBatch.length} Smartlinks` : smartlinkTarget?.id ? 'Save Smartlink' : 'Add Smartlink'}</button></div>
+      </form>
     </CanvasDialog>}
     {modal === 'embed' && <CanvasDialog title="Embed Croft page" close={() => setModal(null)}><div className="ic-form ic-result-list">
       {[['handbook', 'Studio handbook'], ['weekly', 'Weekly studio notes'], ['meeting', 'Meeting notes'], ['projects', 'Projects']].map(([id, name]) =>

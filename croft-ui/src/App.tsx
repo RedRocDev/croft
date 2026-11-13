@@ -4,7 +4,7 @@ import {
   Check, ChevronDown, ChevronRight, ClipboardList, Code, Ellipsis,
   FileText, Folders, GripVertical, Heading1, Heading2, House, Image, Inbox, Italic, LayoutGrid, Lightbulb,
   Link2, List, ListChecks, ListOrdered, MessageSquare, Monitor, Moon, PanelLeft, Plus, Quote,
-  Search, Settings, Settings2, Star, Sun, Table2, Trash2, Type, Underline, X,
+  Search, Settings, Settings2, ShieldCheck, Star, Sun, Table2, Trash2, Type, Underline, X,
 } from 'lucide-react'
 import { Database, type DatabaseView } from './Database'
 import { CanvasWorkspace } from './features/icanvas/CanvasWorkspace'
@@ -12,6 +12,7 @@ import { CanvasBackupDialog } from './features/icanvas/CanvasBackupDialog'
 import { CanvasDialog, ProjectCards, ProjectTree, ProjectDetails, ProjectIcon } from './features/icanvas/ProjectViews'
 import { ancestors, createProject, searchCanvasObjects, type CanvasProject, type CardSide } from './features/icanvas/model'
 import { useCanvasProjects } from './features/icanvas/useCanvasProjects'
+import { ExternalContentSettings } from './features/icanvas/SmartlinkView'
 
 type Page = 'home' | 'handbook' | 'weekly' | 'meeting' | 'projects'
 type Overlay = 'search' | 'inbox' | 'settings' | 'archive' | 'about' | 'new' | null
@@ -249,10 +250,10 @@ const preferences = [
   { name: 'Language & time', icon: CalendarDays }, { name: 'General', icon: Folders },
 ] as const
 
-function SettingsModal({ close, theme, setTheme, openAbout }: {
-  close: () => void; theme: Theme; setTheme: (theme: Theme) => void; openAbout: () => void
+function SettingsModal({ close, theme, setTheme, openAbout, initialCategory = 'Preferences' }: {
+  close: () => void; theme: Theme; setTheme: (theme: Theme) => void; openAbout: () => void; initialCategory?: string
 }) {
-  const [category, setCategory] = useState<string>('Preferences')
+  const [category, setCategory] = useState<string>(initialCategory)
   const [picker, setPicker] = useState(false)
   const current = themes.find(item => item.id === theme) ?? themes[0]
   return <Modal className="settings-modal" label="Workspace settings" close={close}>
@@ -261,6 +262,7 @@ function SettingsModal({ close, theme, setTheme, openAbout }: {
       <h2>Personal</h2>
       {preferences.slice(0, 3).map(({ name, icon: Icon }) =>
         <button key={name} data-active={category === name} onClick={() => { setPicker(false); setCategory(name) }}><Icon />{name}</button>)}
+      <button data-active={category === 'Privacy'} onClick={() => { setPicker(false); setCategory('Privacy') }}><ShieldCheck /> Privacy</button>
       <h2>Workspace</h2>
       <button data-active={category === 'General'} onClick={() => { setPicker(false); setCategory('General') }}><Folders /> General</button>
     </aside>
@@ -289,6 +291,9 @@ function SettingsModal({ close, theme, setTheme, openAbout }: {
         <div className="setting-row"><div><h3>Language</h3><p>Display language for workspace menus.</p></div><span className="setting-value">English (UK) <ChevronDown /></span></div>
         <div className="setting-row"><div><h3>Time zone</h3><p>Calendar and reminder time zone.</p></div><span className="setting-value">Europe/London <ChevronDown /></span></div>
         <div className="setting-row"><div><h3>Start week on Monday</h3><p>Apply to workspace calendars.</p></div><span className="sample-switch" aria-label="On" /></div>
+      </> : category === 'Privacy' ? <>
+        <h2>External Content</h2>
+        <ExternalContentSettings />
       </> : <>
         <div className="setting-row"><div><h3>Workspace name</h3><p>The name shown in the sidebar.</p></div><span className="setting-value">Croft</span></div>
         <div className="setting-row"><div><h3>Workspace icon</h3><p>The Croft geometric C mark.</p></div><span className="settings-mark"><Mark /></span></div>
@@ -318,6 +323,7 @@ export function App() {
   const [jump, setJump] = useState<{ id: string; event: number; side?: CardSide }>()
   const [current, setCurrent] = useState(route)
   const [overlay, setOverlay] = useState<Overlay>(null)
+  const [settingsCategory, setSettingsCategory] = useState('Preferences')
   const [menu, setMenu] = useState<'page' | 'share' | null>(null)
   const [theme, setTheme] = useState<Theme>('light')
   const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches)
@@ -470,7 +476,8 @@ export function App() {
       </div>}
       {canvas ? <CanvasWorkspace key={canvas.id} project={canvas} store={canvases} sidebarOpen={sidebar}
         sidebarToggleRef={sidebarToggleRef} toggleSidebar={toggleSidebar} openCanvas={openCanvas} goHome={() => go('home')}
-        openPage={id => go(pageIds.includes(id as Page) ? id as Page : 'home')} jump={jump} dark={dark} /> :
+        openPage={id => go(pageIds.includes(id as Page) ? id as Page : 'home')} jump={jump} dark={dark} suspendEmbeds={overlay !== null}
+        openPrivacy={() => { setSettingsCategory('Privacy'); setOverlay('settings') }} /> :
       canvasId ? <div className="ic-route-message">{canvases.status === 'Loading' ? 'Opening canvas…' : canvases.error || 'Canvas unavailable.'}
         <button className="quiet-button" onClick={() => go('home')}>Home</button></div> : <>
       <header className="topbar">
@@ -521,7 +528,7 @@ export function App() {
         setDraftCanvas(null)
         openCanvas(project.id)
       }} />}
-    {overlay === 'settings' && <SettingsModal close={closeOverlay} theme={theme} setTheme={setTheme} openAbout={() => openOverlay('about')} />}
+    {overlay === 'settings' && <SettingsModal close={closeOverlay} theme={theme} setTheme={setTheme} openAbout={() => openOverlay('about')} initialCategory={settingsCategory} />}
     {overlay === 'archive' && (!trashedCanvases.length ? <EmptyDialog label="Trash" message="Trash is empty." icon={Trash2} close={closeOverlay} /> :
       <CanvasDialog title="Trash" close={closeOverlay}><div className="ic-form">
         {trashedCanvases.map(project => <div className="ic-row" key={project.id}>

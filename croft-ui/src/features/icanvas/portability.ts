@@ -10,6 +10,7 @@ import { loadImage, renderEditedImage } from './imageRendering.ts'
 import { readLinkedFile } from './linkedFiles.ts'
 import { assertProjectAudioAppearance, assertStyledAudioAsset, formatAudioTime, readAudioAppearance, resolvedAudioAppearance, styledAudioAssetIds, type AudioAppearance } from './audioAppearance.ts'
 import { audioSourceKey, getCachedAudioPeaks, loadAudioPeaks, measureAudioSource, type AudioPeakResult } from './audioPeaks.ts'
+import { readSmartlink, type SmartlinkContent } from './smartlinks.ts'
 
 export type CanvasExportFormat = 'croft' | 'zip' | 'svg' | 'png' | 'jpg' | 'pdf'
 export type CanvasExportOptions = {
@@ -26,7 +27,7 @@ type JsonObject = Record<string, unknown>
 const limit = { package: 120 * 1024 ** 2, manifest: 8 * 1024 ** 2, asset: 40 * 1024 ** 2, projects: 1000, objects: 25000, assets: 2000 }
 export const visualExportLimits = { sourceBytes: 16 * 1024 ** 2, imageMarkup: 48 * 1024 ** 2, editedSide: 1600, canvasSide: 4096, canvasPixels: 12_000_000 }
 const visualAudioLimits = { newSources: 6, totalWaveforms: 256, decodeWindowMs: 5000, bars: 96 }
-const objectKinds = ['text', 'note', 'rectangle', 'ellipse', 'stroke', 'image', 'audio', 'video', 'file', 'canvas', 'frame', 'group', 'page', 'stack'] as const
+const objectKinds = ['text', 'note', 'rectangle', 'ellipse', 'stroke', 'image', 'audio', 'video', 'file', 'canvas', 'frame', 'group', 'page', 'stack', 'smartlink'] as const
 const assetPath = /^assets\/[0-9]{5}\.bin$/
 const activeFileName = /\.(?:app|bat|cmd|com|cpl|dll|exe|hta|html?|jar|js|jse|lnk|msi|msp|pif|ps1|reg|scf|scr|svgz?|url|vb[es]?|ws[fh]|xhtml|xml)(?:\s|\.)*$/i
 const mediaTypes = new Set(['audio/aac', 'audio/flac', 'audio/mp4', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/x-wav', 'video/mp4', 'video/ogg', 'video/quicktime', 'video/webm'])
@@ -102,11 +103,13 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
     const face = object(value)
     const imageEdits = optional(face.imageEdits, readImageEdits)
     const audioAppearance = optional(face.audioAppearance, readAudioAppearance)
+    const smartlink = optional(face.smartlink, readSmartlink)
     return { title: string(face.title, generous ? Infinity : 512), text: string(face.text, generous ? Infinity : 200_000), assetId: optional(face.assetId, id),
-      ...(imageEdits && { imageEdits }), ...(audioAppearance && { audioAppearance }) }
+      ...(imageEdits && { imageEdits }), ...(audioAppearance && { audioAppearance }), ...(smartlink && { smartlink }) }
   })
   const imageEdits = optional(data.imageEdits, readImageEdits)
   const audioAppearance = optional(data.audioAppearance, readAudioAppearance)
+  const smartlink = optional(data.smartlink, readSmartlink)
   const textColour = optional(data.textColour, readColour)
   const visibleSide = optional(data.visibleSide, side => oneOf(side, ['front', 'back']))
   const textAlign = optional(data.textAlign, alignment => oneOf(alignment, ['left', 'center', 'right']))
@@ -128,6 +131,7 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
     ...(back && { back }),
     ...(imageEdits && { imageEdits }),
     ...(audioAppearance && { audioAppearance }),
+    ...(smartlink && { smartlink }),
     ...(textColour && { textColour }),
     ...(visibleSide && { visibleSide }),
     ...(textAlign && { textAlign }),
@@ -225,7 +229,7 @@ function checkHierarchy(rows: Map<string, { id: string; parentId?: string | null
 function readManifest(bytes: Uint8Array): Manifest {
   requireValue(bytes.byteLength <= limit.manifest, 'Package manifest is too large.')
   const data = object(JSON.parse(decoder.decode(bytes)) as unknown)
-  requireValue(data.format === 'croft-icanvas' && (data.version === 1 || data.version === 2 || data.version === 3 || data.version === 4), 'Unsupported Croft package format or version.')
+  requireValue(data.format === 'croft-icanvas' && (data.version === 1 || data.version === 2 || data.version === 3 || data.version === 4 || data.version === 5), 'Unsupported Croft package format or version.')
   const projects = list(data.projects, limit.projects).map((entry) => readProject(entry))
   const neededVersion = canvasFormatVersion(projects)
   requireValue(data.version >= neededVersion, `This content requires a version ${neededVersion} Croft package.`)
@@ -431,7 +435,17 @@ export function projectExportInventory(projects: readonly CanvasProject[], root:
   const overLimit = included.filter(asset => asset.size > limit.asset)
   const outside = scoped.flatMap(canvas => canvas.objects.filter(item => item.kind === 'canvas' && item.targetId && !scopedIds.has(item.targetId)))
   const externalPages = scoped.flatMap(canvas => canvas.objects.filter(item => item.kind === 'page' && item.targetId))
-  return { projectCount: scoped.length, ids, included, relink, missing, bytes, overLimit, outside, externalPages,
+  const smartlinks = scoped.reduce((total, canvas) => total + canvas.objects.reduce((count, item) => count + Number(!!item.smartlink) + Number(!!item.back?.smartlink), 0), 0)
+  const visibleSmartlinks = scoped.reduce((total, canvas) => {
+    const byId = new Map(canvas.objects.map(item => [item.id, item]))
+    const layout = layoutStacks(canvas.objects)
+    return total + canvas.objects.reduce((count, item) => {
+      if (objectFlags(item, byId).hidden || layout.obscured.has(item.id)) return count
+      const link = cardSide(item) === 'back' ? item.back?.smartlink : item.smartlink
+      return count + Number(!!link)
+    }, 0)
+  }, 0)
+  return { projectCount: scoped.length, ids, included, relink, missing, bytes, overLimit, outside, externalPages, smartlinks, visibleSmartlinks,
     exceedsPackage: bytes > limit.package - limit.manifest, maxAssetMiB: limit.asset / 1024 ** 2, maxPackageMiB: limit.package / 1024 ** 2 }
 }
 
@@ -533,6 +547,16 @@ function backTextSvg(title: string, body: string, width: number, height: number,
   const start = titleRows.length ? 34 + titleRows.length * 18 : 34
   const heading = titleRows.length ? `<text x="${x}" y="34" text-anchor="${anchor}" fill="${ink}" font-size="${size}" font-weight="650" font-family="Segoe UI, sans-serif">${titleRows.map((line, i) => `<tspan x="${x}" dy="${i ? 18 : 0}">${xml(line)}</tspan>`).join('')}</text>` : ''
   return `<svg width="${width}" height="${height}"><text x="${padding}" y="16" fill="${ink}" font-size="10" font-family="Segoe UI, sans-serif">Back</text>${heading}${body && start < height ? textSvg(body, width, height, ink, 13, padding, start, align) : ''}</svg>`
+}
+
+function smartlinkSvg(link: SmartlinkContent, width: number, height: number, ink: string, align?: TextAlignment) {
+  const provider = link.provider === 'youtube' ? 'YouTube video' : link.provider === 'x' ? 'X post' : new URL(link.canonicalUrl).hostname.replace(/^www\./, '')
+  const title = link.title || provider
+  const body = [`URL: ${link.canonicalUrl}`, link.notes].filter(Boolean).join('\n')
+  return `<rect x="8" y="8" width="${Math.max(1, width - 16)}" height="${Math.max(1, height - 16)}" rx="7" fill="${ink === '#ffffff' ? '#292e2a' : '#f5f6f3'}" stroke="#8b948d" stroke-opacity=".35"/>` +
+    textSvg(provider, width, Math.min(height, 24), ink, 9, 18, 22, align) +
+    textSvg(title, width, Math.min(height, 34), ink, 11, 18, 42, align) +
+    textSvg(body, width, Math.max(32, height - 4), ink, 8, 18, 58, align)
 }
 
 async function embedImage(asset: CanvasAsset | undefined) {
@@ -749,7 +773,10 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
     if (cardSide(item) === 'back') {
       const side = cardFace(item, 'back')
       const asset = side.assetId ? assetMap.get(side.assetId) : undefined
-      if (side.audioAppearance || asset?.mime.startsWith('audio/')) {
+      if (side.smartlink) {
+        content = fill + backTextSvg(side.title, [side.text, `${side.smartlink.provider === 'youtube' ? 'YouTube video' : side.smartlink.provider === 'x' ? 'X post' : 'Website'}`,
+          side.smartlink.title, side.smartlink.notes, side.smartlink.canonicalUrl].filter(Boolean).join('\n'), item.width, item.height, cardInk, item.textAlign)
+      } else if (side.audioAppearance || asset?.mime.startsWith('audio/')) {
         const offset = Math.min(item.height * .45, side.title || side.text ? 54 : 20)
         content = fill + backTextSvg(side.title, side.text, item.width, offset, cardInk, item.textAlign) +
           await audioMarkup(asset?.name ?? 'Audio attachment', item, asset, side.audioAppearance, offset)
@@ -762,6 +789,8 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
         content = fill + backTextSvg(side.title, body, item.width, textHeight, cardInk, item.textAlign) +
           (edits ? await editedMedia(side.assetId, item, edits) : media ? `<image href="${media}" x="8" y="${textHeight}" width="${Math.max(1, item.width - 16)}" height="${Math.max(1, item.height - textHeight - 8)}" preserveAspectRatio="xMidYMid meet"/>` : '')
       }
+    } else if (item.smartlink) {
+      content = fill + smartlinkSvg(item.smartlink, item.width, item.height, cardInk, item.textAlign)
     } else if (item.kind === 'audio' || (item.kind === 'file' && (item.audioAppearance || item.assetId && assetMap.get(item.assetId)?.mime.startsWith('audio/')))) {
       const asset = item.assetId ? assetMap.get(item.assetId) : undefined
       content = (item.mode === 'card' ? fill : '') + await audioMarkup(item.name, item, asset, item.audioAppearance)
@@ -792,7 +821,7 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
       const filled = item.mode === 'card' || item.kind === 'rectangle'
       content = (filled ? fill : '') + (item.kind === 'note' || item.text ? textSvg(item.text || item.name, item.width, item.height, filled ? cardInk : ink, 15, 13, 20, item.textAlign) : '')
     } else if (item.kind !== 'stack') {
-      const caption = item.caption || { video: 'Video', file: 'Attachment', canvas: 'SubCanvas', page: 'Croft page' }[item.kind]
+      const caption = item.caption || { video: 'Video', file: 'Attachment', canvas: 'SubCanvas', page: 'Croft page', smartlink: 'External link' }[item.kind]
       content = `<rect ${rect} rx="8" fill="${surface}" stroke="${dot}"/>${textSvg(`${item.name}\n${caption || ''}`, item.width, item.height, ink, 13)}`
     } else content = ''
     fragments.set(item.id, `<g transform="translate(${item.x} ${item.y}) rotate(${item.rotation} ${item.width / 2} ${item.height / 2})" opacity="${item.opacity}">${content}</g>`)

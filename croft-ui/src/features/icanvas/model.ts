@@ -1,12 +1,13 @@
 import type { OrientedRect } from './geometry'
 import type { ImageEdits } from './imageEdits'
 import type { AudioAppearance } from './audioAppearance'
+import type { SmartlinkContent } from './smartlinks'
 
 export type Point = { x: number; y: number }
 export type Camera = Point & { zoom: number }
-export type ObjectKind = 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'image' | 'audio' | 'video' | 'file' | 'canvas' | 'frame' | 'group' | 'stack' | 'page'
+export type ObjectKind = 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'image' | 'audio' | 'video' | 'file' | 'canvas' | 'frame' | 'group' | 'stack' | 'page' | 'smartlink'
 export type CardSide = 'front' | 'back'
-export type CardFace = { title: string; text: string; assetId?: string; imageEdits?: ImageEdits; audioAppearance?: AudioAppearance }
+export type CardFace = { title: string; text: string; assetId?: string; imageEdits?: ImageEdits; audioAppearance?: AudioAppearance; smartlink?: SmartlinkContent }
 export type ProjectSwatch = { id: string; name: string; colour: string }
 export type TextAlignment = 'left' | 'center' | 'right'
 export type StackLayout = 'compact' | 'fan'
@@ -18,6 +19,7 @@ export type CanvasObject = Point & {
   parentId?: string; assetId?: string; targetId?: string; points?: Point[]; strokeWidth?: number
   collapsed?: boolean; caption?: string; border?: boolean; referenceOnly?: boolean; textAlign?: TextAlignment
   imageEdits?: ImageEdits; textColour?: string; audioAppearance?: AudioAppearance
+  smartlink?: SmartlinkContent
   /** Frame bounds before automatic growth, in the same world coordinates as the frame. */
   frameBase?: OrientedRect
   back?: CardFace; visibleSide?: CardSide
@@ -48,7 +50,7 @@ export const projectIcons = ['◈', '✦', '⌂', '✿', '◎', '▦']
 export const kinds: Record<ObjectKind, string> = {
   text: 'Text', note: 'Sticky note', rectangle: 'Rectangle', ellipse: 'Ellipse', stroke: 'Drawing',
   image: 'Image', audio: 'Audio', video: 'Video', file: 'File', canvas: 'SubCanvas',
-  frame: 'Frame', group: 'Group', stack: 'Card stack', page: 'Croft page',
+  frame: 'Frame', group: 'Group', stack: 'Card stack', page: 'Croft page', smartlink: 'Smartlink',
 }
 export const edgeLabels: Record<EdgeKind, string> = { direction: 'Directions', connection: 'Connections', relationship: 'Relationships' }
 export const colourForEdge: Record<EdgeKind, string> = { direction: '#537e67', connection: '#858783', relationship: '#8266a3' }
@@ -63,7 +65,7 @@ export function cardSide(object: CanvasObject): CardSide {
 
 export function cardFace(object: CanvasObject, side = cardSide(object)): CardFace {
   return side === 'back' ? object.back ?? { title: '', text: '' } :
-    { title: object.name, text: object.text, assetId: object.assetId, imageEdits: object.imageEdits, audioAppearance: object.audioAppearance }
+    { title: object.name, text: object.text, assetId: object.assetId, imageEdits: object.imageEdits, audioAppearance: object.audioAppearance, smartlink: object.smartlink }
 }
 
 export function imageAssetId(object: CanvasObject, side = cardSide(object)) {
@@ -86,13 +88,16 @@ export function searchCanvasObjects(project: CanvasProject, query: string, kind?
     const parent = object.parentId ? byId.get(object.parentId) : undefined
     const location = parent?.kind === 'stack' ? `${project.name} / ${parent.name}` : project.name
     const matches = (...entries: (string | undefined)[]) => entries.join(' ').toLowerCase().includes(term)
-    if (matches(object.name, object.text, object.caption)) {
+    const frontSmartlink = object.smartlink
+    const frontDescription = [object.text, frontSmartlink?.notes, frontSmartlink?.canonicalUrl].filter(Boolean).join('\n')
+    if (matches(object.name, object.text, object.caption, frontSmartlink?.provider, frontSmartlink?.canonicalUrl, frontSmartlink?.contentId, frontSmartlink?.title, frontSmartlink?.notes)) {
       const side = canFlip(object) ? 'front' : undefined
-      results.push({ object, side, title: object.name, location: side ? `${location} · Front` : location, description: object.text })
+      results.push({ object, side, title: frontSmartlink?.title || object.name, location: side ? `${location} · Front` : location, description: frontDescription || object.text })
     }
-    if (object.back && matches(object.back.title, object.back.text)) {
+    if (object.back && matches(object.back.title, object.back.text, object.back.smartlink?.provider, object.back.smartlink?.canonicalUrl,
+      object.back.smartlink?.contentId, object.back.smartlink?.title, object.back.smartlink?.notes)) {
       results.push({ object, side: 'back', title: object.back.title ? `${object.name} · ${object.back.title}` : object.name,
-        location: `${location} · Back`, description: object.back.text })
+        location: `${location} · Back`, description: [object.back.text, object.back.smartlink?.title, object.back.smartlink?.notes, object.back.smartlink?.canonicalUrl].filter(Boolean).join('\n') })
     }
   }
   return results
@@ -114,12 +119,13 @@ export function createProject(name: string, parentId: string | null = null): Can
 
 export function makeObject(kind: ObjectKind, point: Point, options?: Partial<CanvasObject>): CanvasObject {
   const size = kind === 'frame' ? { width: 420, height: 270 } : kind === 'canvas' ? { width: 240, height: 165 } :
+    kind === 'smartlink' ? { width: 380, height: 270 } :
     kind === 'audio' || kind === 'file' ? { width: 280, height: 108 } :
       kind === 'text' ? { width: 225, height: 90 } : { width: 210, height: 140 }
   return {
     id: crypto.randomUUID(), kind, ...point, ...size, rotation: 0, opacity: 1, hidden: false,
     locked: false, name: kinds[kind], text: '', colour: kind === 'note' ? palette[0] : palette[1],
-    mode: ['note', 'canvas', 'audio', 'video', 'file', 'page'].includes(kind) ? 'card' : 'direct', ...options,
+    mode: ['note', 'canvas', 'audio', 'video', 'file', 'page', 'smartlink'].includes(kind) ? 'card' : 'direct', ...options,
   }
 }
 

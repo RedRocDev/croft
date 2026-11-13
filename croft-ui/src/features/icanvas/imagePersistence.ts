@@ -1,11 +1,12 @@
 import { readImageEdits } from './imageEdits.ts'
 import type { CanvasAsset, CanvasProject, ProjectSwatch } from './model.ts'
 import { containsCardExtensions } from './stackPersistence.ts'
+import { readSmartlink } from './smartlinks.ts'
 
 export const maxProjectSwatches = 48
 export const maxSwatchNameLength = 80
 
-export type CanvasFormatVersion = 1 | 2 | 3 | 4
+export type CanvasFormatVersion = 1 | 2 | 3 | 4 | 5
 
 export function readProjectSwatches(value: unknown): ProjectSwatch[] {
   if (!Array.isArray(value) || value.length > maxProjectSwatches) throw new Error('Invalid project swatch list.')
@@ -32,6 +33,11 @@ export function assertCanvasImageMetadata(project: CanvasProject) {
   for (const edge of project.edges) checkColour(edge.colour)
   for (const item of project.objects) {
     checkColour(item.textColour)
+    if (item.smartlink !== undefined) readSmartlink(item.smartlink)
+    if (item.kind === 'smartlink' && item.smartlink === undefined) throw new Error('Smartlink objects require validated link content.')
+    if (item.smartlink && item.assetId) throw new Error('A card face can contain one attachment or one Smartlink, not both.')
+    if (item.back?.smartlink !== undefined) readSmartlink(item.back.smartlink)
+    if (item.back?.smartlink && item.back.assetId) throw new Error('A card face can contain one attachment or one Smartlink, not both.')
     if (item.imageEdits !== undefined) {
       if (item.kind !== 'image' || !item.assetId) throw new Error('Front image edits require an image source.')
       readImageEdits(item.imageEdits)
@@ -44,6 +50,7 @@ export function assertCanvasImageMetadata(project: CanvasProject) {
 }
 
 export function canvasFormatVersion(projects: readonly CanvasProject[]): CanvasFormatVersion {
+  if (projects.some(project => project.objects.some(item => item.smartlink !== undefined || item.back?.smartlink !== undefined))) return 5
   if (projects.some(project => project.objects.some(item => item.audioAppearance !== undefined || item.back?.audioAppearance !== undefined))) return 4
   if (projects.some(project => project.swatches !== undefined || project.edges.some(edge => edge.colour !== undefined) ||
     project.objects.some(item => item.imageEdits !== undefined || item.back?.imageEdits !== undefined || item.textColour !== undefined))) return 3

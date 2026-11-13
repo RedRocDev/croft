@@ -12,7 +12,7 @@
 | Saves and linked audio | Chrome verified Save VC, timer-based recovery, independent Save As, and an injected quota failure with successful retry. Real Chrome drag handles, a filesystem rename and browser restart exercised linked access. Denial was injected and a real handle substituted for the relink chooser. Relink from a 2-second to a 3-second WAV refreshed the waveform, kept the appearance and preserved both original file hashes. [Audio exports](../tests/icanvas-audio-exports.mjs) · [Linked audio](../tests/icanvas-linked-audio.mjs) |
 | Packages, backup and static output | SVG, PNG, JPG and PDF showed a deterministic unplayed waveform with real peaks, title and duration. The PNG sample matched SVG, and the PDF embedded the verified JPEG. The 128,044-byte export WAV retained its SHA-256 through editable `.croft` and ZIP. A fresh-profile version 4 backup restore preserved separate audio faces, history and exact WAV bytes alongside the existing 44 MiB fixture. The backup wrote 46,158,673 bytes in 100 writes, capped at 1 MiB per write, with about 1.81 MB additional sampled JS heap. Chrome used its private filesystem writer for backup. No external HTTP requests were observed. [Audio exports](../tests/icanvas-audio-exports.mjs) · [Workspace backup](../tests/icanvas-workspace-backup.mjs) |
 
-The production build and 61 automated tests passed. The main waveform browser test reads `CROFT_QA_URL`. For the export harness, pass the Playwright package path, Chrome executable and production preview URL in that order. The peak-service test imports modules from the dev server and regenerates WAV and AAC fixtures. `CROFT_QA_VBR_MP3` and `CROFT_QA_UNINDEXED_MP3` optionally take paths to private synthetic MP3 fixtures. Audio verification covered headless Windows Chrome. Physical touch, cross-browser codec parity and subjective speaker output were outside these runs. A linked edit that preserves the original file size and modification time may go undetected until relinking.
+The production build and 67 automated tests passed for the current Smartlinks implementation. The main waveform browser test reads `CROFT_QA_URL`. For the export harness, pass the Playwright package path, Chrome executable and production preview URL in that order. The peak-service test imports modules from the dev server and regenerates WAV and AAC fixtures. `CROFT_QA_VBR_MP3` and `CROFT_QA_UNINDEXED_MP3` optionally take paths to private synthetic MP3 fixtures. Audio verification covered headless Windows Chrome. Physical touch, cross-browser codec parity and subjective speaker output were outside those runs. A linked edit that preserves the original file size and modification time may go undetected until relinking.
 
 ## High-resolution image comparison
 
@@ -104,7 +104,7 @@ node tests/icanvas-workspace-backup.mjs $env:CROFT_QA_PLAYWRIGHT $env:CROFT_QA_C
 | Media and placement | Chrome decoded a synthetic PNG and played a PCM WAV and changing VP8 WebM clip before and after reload on the production preview. Smart/Free arrangement, retained MIME types and byte sizes passed. |
 | Presentation | A three-stop Chrome run included a SubCanvas. It verified manual next/previous, timed looping, pause and Escape exit with the exact previous camera and route restored. |
 | Export | Six formats downloaded from the production preview. Chrome decoded PNG, JPG and SVG. Poppler read an A4 PDF. Native and ZIP packages contained descendant canvases and media. Reimport preserved attachment bytes and generated distinct IDs. |
-| Responsive and network | Chrome checked 1440×900 dark, 1024×768 light, 768×850 dark and 390×844 light. The workspace harness passed all 15 checkpoints on both the development server and the production preview on port 4173, including horizontal overflow and top controls. It reported zero page, console or HTTP errors and zero external HTTP requests. |
+| Responsive and network | Chrome checked 1440×900 dark, 1024×768 light, 768×850 dark and 390×844 light. The workspace harness passed all 15 checkpoints on both the development server and the production preview on port 4173, including horizontal overflow and top controls. Those non-Smartlink workflows reported zero page, console or HTTP errors and zero external HTTP requests. Consent-gated provider results are recorded separately below. |
 
 ## Reproduce
 
@@ -130,3 +130,27 @@ Set `CROFT_QA_SCREENSHOTS=screenshots` for the workspace run to save light, dark
 - Genuine Windows picker interaction, browser-managed dismissal or manual revocation, physical disk exhaustion, storage eviction, and a process failure during a live IndexedDB commit remain unverified. A crash before a write reaches storage cannot guarantee preservation of those edits. Use the same browser profile and origin to reopen stored data.
 - Physical touchscreen, keyboard-only operation, screen-reader behavior, focus restoration and precise editor/export parity have additional cases beyond the tested fixture. Connector routing and freeform frame stretching remain out of scope for the verified transforms.
 - Native full workspace backups require a browser writable file picker and cap metadata at 64 MiB. Portable ZIP packages retain their size caps. Static exports were validated for one A4 fit and three SVG descendants. Panoramic readability, multi-page printing, migrations and stress testing on media-heavy scenes remain open. [Export limits](ICANVAS_ARCHITECTURE.md)
+
+## Smartlinks
+
+| Check | Evidence |
+| --- | --- |
+| Local parsing and storage | `tests/icanvas-smartlinks.test.mjs` validates YouTube URL forms and start times, public X route parsing, unsafe schemes, host look-alikes, imported records, front/back Smartlink fields, hidden stack members, editable package reimport, version 5 backups and static output without active embeds. These are deterministic local tests; they do not contact providers. |
+| Consent and preference boundary | `tests/icanvas-smartlinks.browser.mjs` used isolated Chrome contexts. For each provider it observed no provider requests before consent, made a real post-consent request, verified Load Once did not persist to a new tab, verified Always Allow persisted, and used Settings → Privacy → External Content to return that provider to Ask. The same browser context was used for the tab reopen; a full Chrome process restart was not run. |
+| YouTube live sample | After Load Once, `https://www.youtube.com/watch?v=jNQXAC9IVRw` returned HTTP 200 from `youtube-nocookie.com`; the loaded document title was “Me at the zoo” and the official player/video DOM was present. The browser test did not press Play or verify ongoing video playback. |
+| X live sample | After Load Once, `https://x.com/i/status/20` returned HTTP 200 from the official `platform.twitter.com/embed/Tweet.html` endpoint. The provider frame rendered the actual post text, “just setting up my twttr.” The embed used `dnt=true`; the separate X provider requests still include network metadata required to serve the embed. |
+| UI and geometry | The browser test pasted a YouTube link, switched Embed → Preview Card → Link Only → Embed, added a separate X Smartlink on the Back face, and confirmed the object ID and CSS geometry did not change. It then confirmed both face URLs were in the saved project before opening a new tab. |
+| Existing card and stack regression checks | `tests/icanvas-card-faces.mjs` and `tests/icanvas-stacks.mjs` passed in Chrome 157 after the integration. They verified legacy face data shape, independent Back media, flips, search, Save VC, Save As, stack selection and restore, undo/redo, reload, and no unexpected external requests. These runs exercise existing card and stack behavior; they do not claim every Smartlink-on-stack path was individually tested. |
+
+The complete Smartlinks browser smoke was run successfully on both Vite development (`127.0.0.1:5173`) and the production build preview (`127.0.0.1:4173`).
+
+Both live checks verify one public sample on the tested Windows Chrome build, not every video or post. Provider availability, network filtering, age/region restrictions, service changes and autoplay policy can alter results. Offline transitions, blocked-provider UI, Save VC, canvas Find, stack reveal and search specifically with Smartlink data were not exercised in this browser test; their storage/UI paths share existing tested canvas systems and are marked separately in the feature matrix.
+
+Run the real-provider browser smoke separately from the deterministic test suite after starting the local Vite server:
+
+```powershell
+$env:CROFT_QA_PLAYWRIGHT = Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'
+$env:CROFT_QA_CHROME = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+$env:CROFT_QA_URL = 'http://127.0.0.1:5173'
+node tests/icanvas-smartlinks.browser.mjs
+```

@@ -11,6 +11,8 @@ import { imageEffectInsets, imageFrameSize, type ImageEdits } from './imageEdits
 import { AudioPlayer } from './AudioPlayer'
 import type { AudioAppearance } from './audioAppearance'
 import { audioSourceKey } from './audioPeaks'
+import { SmartlinkView } from './SmartlinkView'
+import type { SmartlinkMode } from './smartlinks'
 
 type MediaResult = { url?: string; problem?: FileAccessProblem; handle?: FileSystemFileHandle; asset?: Pick<CanvasAsset, 'mime' | 'name'>;
   audioSource?: { blob: Blob; key: string } }
@@ -218,9 +220,10 @@ function BackAttachment({ assetId, replace, edits, compare, frame, audioAppearan
   return <a className="ic-card-back-file" href={url} download={asset.name}><FileText size={14} />{asset.name}</a>
 }
 
-function CardBackFace({ object, replace, imageDraft, compareImage, dark, previewScale }:
-  Pick<ObjectContentProps, 'object' | 'imageDraft' | 'compareImage' | 'dark' | 'previewScale'> & { replace?: () => void }) {
-  const { title, text, assetId, imageEdits, audioAppearance } = cardFace(object, 'back')
+function CardBackFace({ object, replace, imageDraft, compareImage, dark, previewScale, activeSmartlink, smartlinkCanPlay, canEdit,
+  onSmartlinkMode, onSmartlinkEdit, onSmartlinkPrivacy, zoomToPlay }:
+  Pick<ObjectContentProps, 'object' | 'imageDraft' | 'compareImage' | 'dark' | 'previewScale' | 'activeSmartlink' | 'smartlinkCanPlay' | 'canEdit' | 'onSmartlinkMode' | 'onSmartlinkEdit' | 'onSmartlinkPrivacy' | 'zoomToPlay'> & { replace?: () => void }) {
+  const { title, text, assetId, imageEdits, audioAppearance, smartlink } = cardFace(object, 'back')
   const edits = imageDraft ?? imageEdits
   const textStyle = { textAlign: object.textAlign }
   const content = <>
@@ -240,10 +243,14 @@ function CardBackFace({ object, replace, imageDraft, compareImage, dark, preview
   }
   return <div className="ic-card-back" data-card-scroll>
     {content}
+    {smartlink && <div className="ic-card-back-smartlink" data-media-control><SmartlinkView content={smartlink} objectId={object.id} side="back"
+      activeSlot={!!activeSmartlink} canPlay={!!smartlinkCanPlay}
+      canEdit={!!canEdit} dark={dark ?? false} onModeChange={mode => onSmartlinkMode?.(object, 'back', mode)}
+      onEdit={() => onSmartlinkEdit?.(object, 'back')} onPrivacy={() => onSmartlinkPrivacy?.()} zoomToPlay={() => zoomToPlay?.(object)} /></div>}
     {assetId && <div className="ic-card-back-asset" data-media-control>
       <BackAttachment assetId={assetId} replace={replace} audioAppearance={audioAppearance} dark={dark} previewScale={previewScale} />
     </div>}
-    {!title && !text && !assetId && <p className="ic-card-back-empty">The back is empty.</p>}
+    {!title && !text && !assetId && !smartlink && <p className="ic-card-back-empty">The back is empty.</p>}
   </div>
 }
 
@@ -251,18 +258,29 @@ type ObjectContentProps = {
   object: CanvasObject; target?: CanvasProject; reloadMedia?: string; replace: () => void; canRelink?: boolean; replaceBack?: () => void
   imageDraft?: ImageEdits; compareImage?: boolean
   dark?: boolean; previewScale: number
+  activeSmartlink?: boolean; canEdit?: boolean
+  smartlinkCanPlay?: boolean
+  onSmartlinkMode?: (object: CanvasObject, side: 'front' | 'back', mode: SmartlinkMode) => void
+  onSmartlinkEdit?: (object: CanvasObject, side: 'front' | 'back') => void
+  onSmartlinkPrivacy?: () => void; zoomToPlay?: (object: CanvasObject) => void
 }
 
 export function ObjectContent(props: ObjectContentProps) {
   return cardSide(props.object) === 'back'
     ? <CardBackFace object={props.object} replace={props.canRelink === false ? undefined : props.replaceBack}
-      imageDraft={props.imageDraft} compareImage={props.compareImage} dark={props.dark} previewScale={props.previewScale} />
+      imageDraft={props.imageDraft} compareImage={props.compareImage} dark={props.dark} previewScale={props.previewScale}
+      activeSmartlink={props.activeSmartlink} smartlinkCanPlay={props.smartlinkCanPlay} canEdit={props.canEdit} onSmartlinkMode={props.onSmartlinkMode} onSmartlinkEdit={props.onSmartlinkEdit}
+      onSmartlinkPrivacy={props.onSmartlinkPrivacy} zoomToPlay={props.zoomToPlay} />
     : <FrontContent {...props} />
 }
 
-function FrontContent({ object, target, reloadMedia, replace, canRelink = true, imageDraft, compareImage, dark, previewScale }: ObjectContentProps) {
+function FrontContent({ object, target, reloadMedia, replace, canRelink = true, imageDraft, compareImage, dark, previewScale, activeSmartlink,
+  smartlinkCanPlay, canEdit, onSmartlinkMode, onSmartlinkEdit, onSmartlinkPrivacy, zoomToPlay }: ObjectContentProps) {
   const media = useAssetUrl(reloadMedia)
   const { url, problem } = media
+  if (object.smartlink) return <SmartlinkView content={object.smartlink} objectId={object.id} side="front" activeSlot={!!activeSmartlink}
+    canPlay={!!smartlinkCanPlay} canEdit={!!canEdit} dark={dark ?? false} onModeChange={mode => onSmartlinkMode?.(object, 'front', mode)}
+    onEdit={() => onSmartlinkEdit?.(object, 'front')} onPrivacy={() => onSmartlinkPrivacy?.()} zoomToPlay={() => zoomToPlay?.(object)} />
   const showsMedia = object.kind === 'audio' || object.kind === 'video' || object.kind === 'image' || object.kind === 'file'
   if (showsMedia && (problem || !reloadMedia)) return <AssetAccess media={media} hasAsset={!!reloadMedia} replace={canRelink ? replace : undefined} />
   if (url && media.audioSource && (object.kind === 'audio' || object.kind === 'file')) {
@@ -284,6 +302,7 @@ function FrontContent({ object, target, reloadMedia, replace, canRelink = true, 
     case 'file': return <div className="ic-media-placeholder"><FileText size={18} />{object.name}{url && <a href={url} download={object.name}>Download</a>}</div>
     case 'canvas': return target ? <><CanvasThumbnail project={target} /><div className="ic-object-title"><Layers size={14} />{target.name}</div></> : <div className="ic-media-placeholder">Canvas unavailable</div>
     case 'page': return <div className="ic-media-placeholder"><FileText size={20} />{object.name}<small>Croft page</small></div>
+    case 'smartlink': return <div className="ic-media-placeholder">Smartlink content unavailable</div>
     case 'stroke': return <svg aria-hidden="true" viewBox={`0 0 ${object.width} ${object.height}`} preserveAspectRatio="none">
       <polyline points={object.points?.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={object.colour} strokeLinecap="round" strokeLinejoin="round" strokeWidth={object.strokeWidth ?? 3} />
     </svg>

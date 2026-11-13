@@ -1,5 +1,6 @@
 import { useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ColourPicker } from './ColourPicker'
+import { providerLabel, type SmartlinkContent, type SmartlinkMode } from './smartlinks'
 import {
   ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronDown, ChevronRight,
   Eye, EyeOff, Layers, Lock, PanelLeft, PanelRight, SlidersHorizontal, Unlock, X,
@@ -22,6 +23,9 @@ type CardActions = {
   setStackFanned?: (stack: CanvasObject, fanned: boolean) => void
   unstack?: (stack: CanvasObject) => void
   deleteStack?: (stack: CanvasObject) => void
+  editSmartlink?: (object: CanvasObject, side: 'front' | 'back') => void
+  updateSmartlink?: (object: CanvasObject, side: 'front' | 'back', patch: Partial<SmartlinkContent>) => void
+  removeSmartlink?: (object: CanvasObject, side: 'front' | 'back') => void
 }
 
 interface InspectorProps extends CardActions {
@@ -176,7 +180,7 @@ function TextField({ label, value, onCommit, multiline = false, required = false
 }
 
 function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fitFrame, flipCard, editBack, attachBack,
-  removeBackAttachment, selectStackMember, removeFromStack, setStackFanned, unstack, deleteStack, mediaTools, swatches }: CardActions & {
+  removeBackAttachment, selectStackMember, removeFromStack, setStackFanned, unstack, deleteStack, editSmartlink, updateSmartlink, removeSmartlink, mediaTools, swatches }: CardActions & {
   object: CanvasObject
   objects: ReadonlyMap<string, CanvasObject>
   update: UpdateObject
@@ -192,6 +196,7 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
   const frame = object.kind === 'frame'
   const stack = object.stack
   const side = cardSide(object)
+  const sideSmartlink = side === 'back' ? object.back?.smartlink : object.smartlink
   const hasContent = object.kind === 'text' || object.kind === 'note'
   const frames = Array.from(objects.values()).filter(candidate => {
     if (candidate.kind !== 'frame' || candidate.id === object.id) return false
@@ -229,6 +234,26 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
     </div>
     {parentLocked && <p className="ic-inspector-status">Locked by a parent layer.</p>}
     {mediaTools}
+    <fieldset className="ic-inspector-section" disabled={locked}>
+      <legend>Smartlink</legend>
+      {sideSmartlink ? <>
+        <p className="ic-colour-hint">{providerLabel(sideSmartlink.provider)} · {sideSmartlink.canonicalUrl}</p>
+        <label className="ic-inspector-field"><span>Display mode</span>
+          <select value={sideSmartlink.mode} onChange={event => updateSmartlink?.(object, side, { mode: event.currentTarget.value as SmartlinkMode })}>
+            <option value="embed" disabled={sideSmartlink.provider === 'website'}>Embed</option><option value="preview">Preview Card</option><option value="link">Link Only</option>
+          </select>
+        </label>
+        <TextField label="Link title" value={sideSmartlink.title ?? ''} onCommit={title => updateSmartlink?.(object, side, { title })} />
+        <TextField label="Link notes" value={sideSmartlink.notes ?? ''} multiline onCommit={notes => updateSmartlink?.(object, side, { notes })} />
+        <div className="ic-inspector-card-actions">
+          {editSmartlink && <button type="button" className="ic-button" onClick={() => editSmartlink(object, side)}>Edit URL…</button>}
+          {removeSmartlink && <button type="button" className="ic-button" onClick={() => removeSmartlink(object, side)}>Remove Smartlink</button>}
+        </div>
+      </> : <>
+        <p className="ic-colour-hint">Add one link to the {side} face. It is stored separately from media on the other face.</p>
+        {editSmartlink && <button type="button" className="ic-button" onClick={() => editSmartlink(object, side)}>Add Smartlink…</button>}
+      </>}
+    </fieldset>
     {canFlip(object) && (flipCard || editBack) && <fieldset className="ic-inspector-section">
       <legend>Card faces</legend>
       <p className="ic-colour-hint">Showing {side === 'back' ? 'Back' : 'Front'}</p>
@@ -238,7 +263,7 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
         </button>}
         {editBack && <button type="button" className="ic-button" disabled={locked} onClick={() => editBack(object)}>Edit Back</button>}
         {attachBack && <button type="button" className="ic-button" disabled={locked} onClick={() => attachBack(object)}>
-          {object.back?.assetId ? 'Replace Back attachment' : 'Add Back attachment'}
+          {object.back?.smartlink ? 'Replace Back content…' : object.back?.assetId ? 'Replace Back attachment' : 'Add Back attachment'}
         </button>}
         {object.back?.assetId && removeBackAttachment && <button type="button" className="ic-button" disabled={locked}
           onClick={() => removeBackAttachment(object)}>Remove Back attachment</button>}

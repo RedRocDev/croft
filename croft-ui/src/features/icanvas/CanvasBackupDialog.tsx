@@ -18,7 +18,7 @@ export function formatMiB(bytes: number) {
 }
 
 function BackupInventory({ inventory, label }: { inventory: WorkspaceBackupInventory; label: string }) {
-  const { projects, trashed, versions, recoveries, copied, bytes, links, absent, orphans, externalPages, unresolvedCanvases } = inventory
+  const { projects, trashed, versions, recoveries, copied, bytes, links, absent, orphans, externalPages, unresolvedCanvases, smartlinks } = inventory
   return <section aria-label={label}>
     <p><strong>{projects} canvases, {trashed} explicitly trashed, {versions} saved versions and {recoveries} recoveries.</strong></p>
     <p>{copied.length} copied attachments ({formatMiB(bytes)}) include their file bytes. {orphans} asset records are unreferenced by the current heads and snapshots.</p>
@@ -31,6 +31,7 @@ function BackupInventory({ inventory, label }: { inventory: WorkspaceBackupInven
       {absent.length > 30 && <p>{absent.length - 30} more missing attachments are recorded in the backup inventory.</p>}
     </details>}
     {externalPages > 0 && <p>{externalPages} references to Croft pages outside iCanvas include the reference only, across canvases and snapshots.</p>}
+    {smartlinks > 0 && <p>{smartlinks} Smartlink references are included across current canvases and saved history. Provider permissions and remote media are not included; restores do not load links automatically.</p>}
     {unresolvedCanvases > 0 && <p>{unresolvedCanvases} canvas references have no current target. Their unavailable state is preserved.</p>}
   </section>
 }
