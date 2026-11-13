@@ -5,6 +5,7 @@ export type Camera = Point & { zoom: number }
 export type ObjectKind = 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'image' | 'audio' | 'video' | 'file' | 'canvas' | 'frame' | 'group' | 'stack' | 'page'
 export type CardSide = 'front' | 'back'
 export type CardFace = { title: string; text: string; assetId?: string }
+export type TextAlignment = 'left' | 'center' | 'right'
 export type StackLayout = 'compact' | 'fan'
 export type EdgeKind = 'direction' | 'connection' | 'relationship'
 export type Grid = 'dots' | 'lines' | 'none'
@@ -12,7 +13,7 @@ export type CanvasObject = Point & {
   id: string; kind: ObjectKind; width: number; height: number; rotation: number; opacity: number
   hidden: boolean; locked: boolean; name: string; text: string; colour: string; mode: 'direct' | 'card'
   parentId?: string; assetId?: string; targetId?: string; points?: Point[]; strokeWidth?: number
-  collapsed?: boolean; caption?: string; border?: boolean; referenceOnly?: boolean
+  collapsed?: boolean; caption?: string; border?: boolean; referenceOnly?: boolean; textAlign?: TextAlignment
   /** Frame bounds before automatic growth, in the same world coordinates as the frame. */
   frameBase?: OrientedRect
   back?: CardFace; visibleSide?: CardSide

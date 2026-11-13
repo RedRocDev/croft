@@ -13,7 +13,7 @@ function fixture() {
   const project = createProject('Card portability')
   const frame = makeObject('frame', { x: 40, y: 50 }, { width: 650, height: 420, rotation: 16 })
   const stack = makeObject('stack', { x: 70, y: 90 }, { parentId: frame.id, width: 255, height: 240, rotation: 17, name: 'Clip stack' })
-  const image = makeObject('image', { x: 125, y: 140 }, { mode: 'card', name: 'Image front', parentId: stack.id, assetId: 'original', visibleSide: 'back',
+  const image = makeObject('image', { x: 125, y: 140 }, { mode: 'card', name: 'Image front', parentId: stack.id, assetId: 'original', visibleSide: 'back', textAlign: 'right',
     back: { title: 'Private reverse', text: 'See the route', assetId: 'pixels' } })
   const hidden = makeObject('note', { x: 230, y: 228 }, { parentId: stack.id, name: 'Second member', text: 'Rear note', visibleSide: 'back',
     back: { title: 'Rear reverse', text: 'Rest when needed', assetId: 'hidden-file' } })
@@ -48,6 +48,7 @@ test('editable v2 preserves both sides, ordered members, scoped selection, conne
   assert.equal(obscured.parentId, pile.id)
   assert.equal(copy.edges[0].from, obscured.id)
   assert.equal(cardSide(front), 'back')
+  assert.equal(front.textAlign, 'right')
   assert.equal(cardFace(front).title, 'Private reverse')
   assert.equal(cardFace(front, 'front').title, 'Image front')
   assert.deepEqual(Buffer.from(await assets.find(asset => asset.id === front.back.assetId).blob.arrayBuffer()), pixels)
@@ -86,6 +87,7 @@ test('Save As and v2 workspace restore consistently remap stack cards and histor
   kind(prior, 'stack').stack.order.reverse()
   const historyBytes = new Blob(['prior notes'], { type: 'text/plain' })
   kind(prior, 'image').back.assetId = 'history-only'
+  kind(prior, 'image').textAlign = 'center'
   const state = {
     projects: [project], assets: [...files, { id: 'history-only', name: 'prior.txt', mime: historyBytes.type, size: historyBytes.size, blob: historyBytes }],
     versions: [{ id: 'version', projectId: project.id, project: prior, createdAt: Date.now(), number: 1, notes: 'Prior order', descendants: [] }],
@@ -102,6 +104,9 @@ test('Save As and v2 workspace restore consistently remap stack cards and histor
   assert.equal(kind(version.project, 'stack').id, kind(restored, 'stack').id)
   assert.deepEqual(kind(version.project, 'stack').stack.order, [...kind(restored, 'stack').stack.order].reverse())
   assert.equal(kind(copy.recoveries[0].project, 'stack').stack.layout, 'fan')
+  assert.equal(kind(restored, 'image').textAlign, 'right')
+  assert.equal(kind(version.project, 'image').textAlign, 'center')
+  assert.equal(kind(copy.recoveries[0].project, 'image').textAlign, 'center')
   const oldAsset = copy.assets.find(asset => asset.id === kind(version.project, 'image').back.assetId)
   assert.equal(await oldAsset.blob.text(), 'prior notes')
   assert.equal(await copy.assets.find(asset => asset.id === kind(restored, 'image').back.assetId).blob.arrayBuffer().then(bytes => Buffer.from(bytes).toString('hex')), pixels.toString('hex'))
@@ -112,6 +117,8 @@ test('static output renders the displayed face, compact stack and fan while pres
   const { project, files } = fixture()
   const compact = await (await renderProjectSvg(project, {}, files)).blob.text()
   assert.match(compact, /Private reverse/)
+  assert.match(compact, /<text[^>]+text-anchor="end"[^>]*><tspan[^>]*>Private reverse<\/tspan>/)
+  assert.match(compact, /<text[^>]+text-anchor="end"[^>]*><tspan[^>]*>See the route<\/tspan>/)
   assert.match(compact, /data:image\/png;base64/)
   assert.match(compact, /data-stack-rear="true"/)
   assert.match(compact, /Rear endpoint/)
@@ -136,6 +143,7 @@ test('legacy single-sided project emits v1 and loads its existing Front with an 
   const { projects: [project] } = await importProject(zipped)
   const note = kind(project, 'note')
   assert.equal(cardSide(note), 'front')
+  assert.equal(note.textAlign, undefined)
   assert.equal(cardFace(note).text, 'Front text')
   assert.deepEqual(cardFace(note, 'back'), { title: '', text: '' })
 })

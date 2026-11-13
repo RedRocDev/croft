@@ -1,7 +1,7 @@
 import { zipSync } from 'fflate'
 import { GRID_SPACING, rotatedBounds } from './geometry.ts'
 import { readableInk } from './colour.ts'
-import { cardFace, cardSide, objectAssetIds, objectFlags, type CanvasAsset, type CanvasProject, type CanvasObject, type CanvasSettings } from './model.ts'
+import { cardFace, cardSide, objectAssetIds, objectFlags, type CanvasAsset, type CanvasProject, type CanvasObject, type CanvasSettings, type TextAlignment } from './model.ts'
 import { assertStackMembership, containsCardExtensions } from './stackPersistence.ts'
 import { layoutStacks } from './stackScene.ts'
 
@@ -95,6 +95,7 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
     return { title: string(face.title, generous ? Infinity : 512), text: string(face.text, generous ? Infinity : 200_000), assetId: optional(face.assetId, id) }
   })
   const visibleSide = optional(data.visibleSide, side => oneOf(side, ['front', 'back']))
+  const textAlign = optional(data.textAlign, alignment => oneOf(alignment, ['left', 'center', 'right']))
   const stack = optional(data.stack, value => {
     const shape = object(value)
     return { order: list(shape.order, maxItems).map(id), layout: oneOf(shape.layout, ['compact', 'fan']) }
@@ -112,6 +113,7 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
     border: optional(data.border, boolean), referenceOnly: optional(data.referenceOnly, boolean),
     ...(back && { back }),
     ...(visibleSide && { visibleSide }),
+    ...(textAlign && { textAlign }),
     ...(stack && { stack }),
     frameBase: optional(data.frameBase, (value) => {
       requireValue(data.kind === 'frame', 'Only frames can have a sizing baseline.')
@@ -468,19 +470,27 @@ function lines(text: string, width: number, fontSize: number, rows: number) {
   return result
 }
 
-function textSvg(text: string, width: number, height: number, ink: string, font = 15, x = 12, y = 20) {
-  const lineHeight = font * 1.25
-  const body = lines(text, Math.max(1, width - x * 2), font, Math.max(1, Math.floor((height - y) / lineHeight) + 1))
-  return `<text x="${x}" y="${y}" fill="${ink}" font-size="${font}" font-family="Segoe UI, sans-serif">${body.map((line, index) => `<tspan x="${x}" dy="${index ? lineHeight : 0}">${xml(line)}</tspan>`).join('')}</text>`
+function textPlacement(width: number, padding: number, align?: TextAlignment) {
+  if (align === 'center') return { x: width / 2, anchor: 'middle' }
+  if (align === 'right') return { x: width - padding, anchor: 'end' }
+  return { x: padding, anchor: 'start' }
 }
 
-function backTextSvg(title: string, body: string, width: number, height: number, ink: string) {
+function textSvg(text: string, width: number, height: number, ink: string, font = 15, padding = 12, y = 20, align?: TextAlignment) {
+  const { x, anchor } = textPlacement(width, padding, align)
+  const lineHeight = font * 1.25
+  const body = lines(text, Math.max(1, width - padding * 2), font, Math.max(1, Math.floor((height - y) / lineHeight) + 1))
+  return `<text x="${x}" y="${y}" text-anchor="${anchor}" fill="${ink}" font-size="${font}" font-family="Segoe UI, sans-serif">${body.map((line, index) => `<tspan x="${x}" dy="${index ? lineHeight : 0}">${xml(line)}</tspan>`).join('')}</text>`
+}
+
+function backTextSvg(title: string, body: string, width: number, height: number, ink: string, align?: TextAlignment) {
   const padding = 12
+  const { x, anchor } = textPlacement(width, padding, align)
   const size = 15
   const titleRows = title ? lines(title, width - padding * 2, size, Math.max(0, Math.floor((height - 34) / 18) + 1)) : []
   const start = titleRows.length ? 34 + titleRows.length * 18 : 34
-  const heading = titleRows.length ? `<text x="${padding}" y="34" fill="${ink}" font-size="${size}" font-weight="650" font-family="Segoe UI, sans-serif">${titleRows.map((line, i) => `<tspan x="${padding}" dy="${i ? 18 : 0}">${xml(line)}</tspan>`).join('')}</text>` : ''
-  return `<svg width="${width}" height="${height}"><text x="${padding}" y="16" fill="${ink}" font-size="10" font-family="Segoe UI, sans-serif">Back</text>${heading}${body && start < height ? textSvg(body, width, height, ink, 13, padding, start) : ''}</svg>`
+  const heading = titleRows.length ? `<text x="${x}" y="34" text-anchor="${anchor}" fill="${ink}" font-size="${size}" font-weight="650" font-family="Segoe UI, sans-serif">${titleRows.map((line, i) => `<tspan x="${x}" dy="${i ? 18 : 0}">${xml(line)}</tspan>`).join('')}</text>` : ''
+  return `<svg width="${width}" height="${height}"><text x="${padding}" y="16" fill="${ink}" font-size="10" font-family="Segoe UI, sans-serif">Back</text>${heading}${body && start < height ? textSvg(body, width, height, ink, 13, padding, start, align) : ''}</svg>`
 }
 
 async function embedImage(asset: CanvasAsset | undefined) {
@@ -552,7 +562,7 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
       const assetLabel = side.assetId ? assetMap.get(side.assetId)?.name || 'Attachment unavailable in export' : ''
       const textHeight = media ? item.height * .45 : item.height
       const body = [side.text, media ? '' : assetLabel].filter(Boolean).join('\n') || (!side.title && !side.assetId ? 'The back is empty.' : '')
-      content = fill + backTextSvg(side.title, body, item.width, textHeight, cardInk) +
+      content = fill + backTextSvg(side.title, body, item.width, textHeight, cardInk, item.textAlign) +
         (media ? `<image href="${media}" x="8" y="${textHeight}" width="${Math.max(1, item.width - 16)}" height="${Math.max(1, item.height - textHeight - 8)}" preserveAspectRatio="xMidYMid meet"/>` : '')
     } else if (item.kind === 'image') {
       const media = await mediaUri(item.assetId)
@@ -564,13 +574,13 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
     } else if (item.kind === 'stroke') {
       content = `<polyline points="${(item.points ?? []).map((point) => `${point.x},${point.y}`).join(' ')}" fill="none" stroke="${colour}" stroke-width="${item.strokeWidth ?? 2}" stroke-linecap="round" stroke-linejoin="round"/>`
     } else if (item.kind === 'text') {
-      content = (item.mode === 'card' ? fill : '') + textSvg(item.text || item.name, item.width, item.height, item.mode === 'card' ? cardInk : ink, 22, 0, 22)
+      content = (item.mode === 'card' ? fill : '') + textSvg(item.text || item.name, item.width, item.height, item.mode === 'card' ? cardInk : ink, 22, 7, 22, item.textAlign)
     } else if (item.kind === 'frame' || item.kind === 'group') {
       const frameFill = item.kind === 'frame' ? colour : 'none'
       content = `<rect ${rect} rx="8" fill="${frameFill}" fill-opacity=".38" stroke="${dot}"/>${textSvg(item.name, item.width, item.height, ink, 13)}`
     } else if (item.kind === 'note' || item.kind === 'rectangle') {
       const filled = item.mode === 'card' || item.kind === 'rectangle'
-      content = (filled ? fill : '') + (item.kind === 'note' || item.text ? textSvg(item.text || item.name, item.width, item.height, filled ? cardInk : ink) : '')
+      content = (filled ? fill : '') + (item.kind === 'note' || item.text ? textSvg(item.text || item.name, item.width, item.height, filled ? cardInk : ink, 15, 13, 20, item.textAlign) : '')
     } else if (item.kind !== 'stack') {
       const caption = item.caption || { audio: 'Audio', video: 'Video', file: 'Attachment', canvas: 'SubCanvas', page: 'Croft page' }[item.kind]
       content = `<rect ${rect} rx="8" fill="${surface}" stroke="${dot}"/>${textSvg(`${item.name}\n${caption || ''}`, item.width, item.height, ink, 13)}`

@@ -188,10 +188,11 @@ function BackAttachment({ assetId, replace }: { assetId: string; replace?: () =>
 
 function CardBackFace({ object, replace }: { object: CanvasObject; replace?: () => void }) {
   const { title, text, assetId } = cardFace(object, 'back')
+  const textStyle = { textAlign: object.textAlign }
   return <div className="ic-card-back" data-card-scroll>
     <span className="ic-card-back-marker">Back</span>
-    {title && <p className="ic-card-back-title" data-selectable-card-text>{title}</p>}
-    {text && <p className="ic-card-back-text" data-selectable-card-text>{text}</p>}
+    {title && <p className="ic-card-back-title" style={textStyle} data-selectable-card-text>{title}</p>}
+    {text && <p className="ic-card-back-text" style={textStyle} data-selectable-card-text>{text}</p>}
     {assetId && <div className="ic-card-back-asset" data-media-control>
       <BackAttachment assetId={assetId} replace={replace} />
     </div>}
@@ -225,6 +226,6 @@ function FrontContent({ object, target, reloadMedia, replace, canRelink = true }
       <polyline points={object.points?.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={object.colour} strokeLinecap="round" strokeLinejoin="round" strokeWidth={object.strokeWidth ?? 3} />
     </svg>
     case 'frame': case 'group': case 'stack': case 'ellipse': case 'rectangle': return null
-    case 'text': case 'note': return <div className="ic-object-text">{object.text || object.name}</div>
+    case 'text': case 'note': return <div className="ic-object-text" style={{ textAlign: object.textAlign }}>{object.text || object.name}</div>
   }
 }

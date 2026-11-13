@@ -88,7 +88,7 @@ test('rejects unsupported packages and fails when asset contents differ from the
 
 test('renders escaped SVG text, bounded image dimensions and visible model content', async () => {
   const project = createProject('Studio & archive')
-  project.objects.push(makeObject('note', { x: -400, y: 30 }, { text: 'Coast <garden> & trail', width: 260 }))
+  project.objects.push(makeObject('note', { x: -400, y: 30 }, { text: 'Coast <garden> & trail\nAnother line', width: 260, textAlign: 'center' }))
   project.objects.push(makeObject('note', { x: 400_000, y: 20 }, { text: 'Distant note' }))
   project.objects.push(makeObject('note', { x: 0, y: 0 }, { text: 'Hidden note', hidden: true }))
   const picture = await renderProjectSvg(project, { background: 'grid' })
@@ -96,8 +96,21 @@ test('renders escaped SVG text, bounded image dimensions and visible model conte
   assert.ok(picture.width <= 4096)
   assert.ok(picture.height > 0)
   assert.match(svg, /Studio &amp; archive/)
-  assert.match(svg, /Coast &lt;garden&gt; &amp; trail/)
-  assert.match(svg, /Distant note/)
+  assert.match(svg, /<text x="130"[^>]+text-anchor="middle"[^>]*><tspan x="130"[^>]*>Coast &lt;garden&gt; &amp; trail<\/tspan><tspan x="130"[^>]*>Another line<\/tspan>/)
+  assert.match(svg, /<text x="13"[^>]+text-anchor="start"[^>]*><tspan x="13"[^>]*>Distant note<\/tspan>/)
   assert.match(svg, /fill="url\(#grid\)"/)
   assert.doesNotMatch(svg, /Hidden note/)
+})
+
+test('editable v1 packages round-trip text alignment as optional formatting', async () => {
+  const project = createProject('Aligned text')
+  project.objects = [makeObject('text', { x: 12, y: 30 }, { text: 'Right aligned', textAlign: 'right' })]
+  const file = await makeProjectPackage([project], project.id)
+  const entries = unzipSync(new Uint8Array(await file.arrayBuffer()))
+  const manifest = JSON.parse(decode.decode(entries['manifest.json']))
+  assert.equal(manifest.version, 1)
+  assert.equal((await importProject(file)).projects[0].objects[0].textAlign, 'right')
+  manifest.projects[0].objects[0].textAlign = 'invalid'
+  const invalid = { ...entries, 'manifest.json': strToU8(JSON.stringify(manifest)) }
+  await assert.rejects(importProject(new Blob([zipSync(invalid, { level: 0 })])), /unknown value/i)
 })

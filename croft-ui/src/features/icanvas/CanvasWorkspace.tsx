@@ -3,7 +3,7 @@ import RBush from 'rbush'
 import {
   ArrowDownToLine, ArrowRight, Box, ChevronDown, ChevronRight, Circle, Copy, Eye, FileText, GripHorizontal, Hand, Image,
   Layers, Lock, LockOpen, Maximize, Minus, MoreHorizontal, MousePointer2, PanelLeft, PenLine, Play, Plus, Redo2, RotateCw,
-  Save, Search, Square, StickyNote, Trash2, Type, Undo2, Unlink, X,
+  Save, Search, Square, StickyNote, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, Type, Undo2, Unlink, X,
 } from 'lucide-react'
 import { ancestors, canFlip, cardFace, cardSide, createProject, descendants, edgeLabels, kinds, makeObject, objectFlags, palette, searchCanvasObjects,
   type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type CardSide, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
@@ -43,6 +43,11 @@ const shapeForAsset = (asset: CanvasAsset): ObjectKind =>
 const action = (label: string, run: () => void, icon?: React.ReactNode) => ({ label, run, icon })
 const rotationIncrements = [5, 15, 30, 45, 90, 0]
 const rotationEdges = ['top', 'right', 'bottom', 'left'] as const
+const textAlignments = [
+  { value: 'left', label: 'Align text left', icon: TextAlignStart },
+  { value: 'center', label: 'Align text center', icon: TextAlignCenter },
+  { value: 'right', label: 'Align text right', icon: TextAlignEnd },
+] as const
 const frameGeometry = ({ x, y, width, height, rotation }: OrientedRect): OrientedRect => ({ x, y, width, height, rotation })
 
 function translateObject(object: CanvasObject, dx: number, dy: number): CanvasObject {
@@ -1048,6 +1053,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const tools = [{ id: 'select', name: 'Select', icon: MousePointer2 }, { id: 'hand', name: 'Hand', icon: Hand },
     { id: 'text', name: 'Text', icon: Type }, { id: 'note', name: 'Sticky note', icon: StickyNote }, { id: 'stroke', name: 'Draw', icon: PenLine }] as const
   const currentColour = chosen.length === 1 && chosen[0].mode === 'card' ? chosen[0].colour : undefined
+  const singleSelection = chosen.length === 1 ? chosen[0] : undefined
+  const textSelection = singleSelection && (singleSelection.kind === 'text' || singleSelection.kind === 'note' ||
+    cardSide(singleSelection) === 'back') ? singleSelection : undefined
+  const alignment = textSelection?.textAlign ?? 'left'
+  const quickWidth = (rotateTarget ? 255 : 225) + (textSelection ? 104 : 0)
   const showQuick = canEdit && !selectedStack && !!quick && !play && !dragged.length && !marquee && chosen.some(item => renderedIds.has(item.id) || item.kind === 'group')
 
   return <section className="ic-workspace" data-presentation={!!play}>
@@ -1319,7 +1329,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           </div>
         </div>}
         {showQuick && quick && <div className="ic-quick" role="toolbar" aria-label="Selection actions" onPointerDown={event => event.stopPropagation()}
-          style={{ left: Math.max(8, Math.min(size.width - (rotateTarget ? 255 : 225), quick.x)),
+          style={{ left: Math.max(8, Math.min(size.width - quickWidth, quick.x)),
             top: selectedMember && quick.y - quickOffset < 58 ? Math.max(94, quick.y + 14) : Math.max(58, quick.y - quickOffset) }}>
           {chosen.length === 1 && <>
             {['canvas', 'page'].includes(chosen[0].kind) && <button className="ic-icon" aria-label="Quick Preview" title="Quick Preview" onClick={() => previewObject(chosen[0])}><Eye /></button>}
@@ -1346,6 +1356,12 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           </>}
           {stackingSelection && <button className="ic-button" disabled={!stackable} title={stackHint} onClick={stackSelection}>Stack Cards</button>}
           {chosen.length > 1 && <button className="ic-icon" aria-label="Group selection" title="Group selection" onClick={groupSelection}><Layers /></button>}
+          {textSelection && <div className="ic-text-align" role="group" aria-label="Text alignment"
+            onKeyDown={event => { if (event.key === ' ') event.stopPropagation() }}>
+            {textAlignments.map(({ value, label, icon: Icon }) => <button key={value} type="button" className="ic-icon" title={label}
+              aria-label={label} aria-pressed={alignment === value} disabled={selectionLocked}
+              onClick={() => { if (alignment !== value) changeObject(textSelection, { textAlign: value === 'left' ? undefined : value }) }}><Icon /></button>)}
+          </div>}
           <button className="ic-icon" aria-label="Duplicate" title="Duplicate" onClick={duplicate}><Copy /></button>
           <button className="ic-icon" aria-label="Delete selected" title="Delete selected" onClick={removeSelection}><Trash2 /></button>
           {rotateTarget && <label className="ic-rotation-setting" title="Hold Alt for free rotation">

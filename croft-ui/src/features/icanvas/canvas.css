@@ -132,6 +132,7 @@ span.ic-object-title { display: block; text-align: center; }
 .ic-toolbar[data-mode="parked"] .ic-menu { top: 0; left: calc(100% + 7px); right: auto; }
 .ic-toolbar-grip { cursor: grab; color: var(--quiet); width: 22px; min-width: 22px; }
 .ic-quick { z-index: 3; }
+.ic-text-align { display: flex; margin-inline: 3px; padding-inline: 3px; border-inline: 1px solid var(--border); }
 .ic-context-menu { min-width: 168px; }
 .ic-inspector-shell { position: absolute; z-index: 5; top: 63px; right: 12px; max-height: calc(100% - 127px); display: flex; box-shadow: var(--ic-shadow); border-radius: 8px; }
 .ic-zoom { right: 12px; bottom: 12px; z-index: 3; }
