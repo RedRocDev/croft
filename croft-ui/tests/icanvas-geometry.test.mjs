@@ -2,13 +2,22 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   MAX_ZOOM, MIN_ZOOM, connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter,
-  renderOrigin, rotatedBounds, screenToWorld, snapPoint, transformDescendant, visibleInViewport, worldToScreen, zoomAt,
+  renderOrigin, rotatedBounds, screenToWorld, snapPoint, snapRotation, transformDescendant, visibleInViewport, worldToScreen, wrappedAngleDelta, zoomAt,
 } from '../src/features/icanvas/geometry.ts'
 
 const closeTo = (actual, expected) => assert.ok(
   Math.abs(actual - expected) < 1e-9,
   `Expected ${actual} to be close to ${expected}`,
 )
+
+test('manual rotation crosses the angle boundary continuously and snaps to the chosen increment', () => {
+  assert.equal(wrappedAngleDelta(175, -170), 15)
+  assert.equal(wrappedAngleDelta(-170, 175), -15)
+  assert.equal(snapRotation(73, 15), 75)
+  assert.equal(snapRotation(148, 30), 150)
+  assert.equal(snapRotation(359, 15), 0)
+  closeTo(snapRotation(-11.2, 0), 348.8)
+})
 
 test('camera transforms are inverse for translated, zoomed and negative coordinates', () => {
   const camera = { x: 37, y: -111, zoom: 0.7 }

@@ -1,10 +1,11 @@
 import { useId, useMemo, useState } from 'react'
+import { ColourPicker } from './ColourPicker'
 import {
   ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronDown, ChevronRight,
   Eye, EyeOff, Layers, Lock, SlidersHorizontal, Unlock, X,
 } from 'lucide-react'
 import {
-  kinds, objectFlags, palette,
+  kinds, objectFlags,
   type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings,
 } from './model'
 import './inspector.css'
@@ -173,11 +174,8 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
     </fieldset>
     <fieldset className="ic-inspector-section" disabled={locked}>
       <legend>Appearance</legend>
-      <div className="ic-inspector-palette">
-        {palette.map(colour => <button key={colour} type="button" className="ic-inspector-swatch"
-          style={{ backgroundColor: colour }} aria-label={'Select colour ' + colour} title={colour}
-          aria-pressed={object.colour === colour} onClick={() => update(object, { colour })} />)}
-      </div>
+      <ColourPicker colour={object.colour} onChange={colour => update(object, { colour })} />
+      {object.kind === 'image' && object.mode === 'direct' && <p className="ic-colour-hint">Show border uses this colour around the image.</p>}
       <label className="ic-inspector-check">
         <span>Show border</span>
         <input type="checkbox" checked={object.border ?? frame} onChange={event => update(object, { border: event.currentTarget.checked })} />

@@ -192,6 +192,40 @@
   outline-offset: 1px;
 }
 
+.ic-colour-control, .ic-colour-picker { display: grid; gap: 8px; }
+.ic-colour-custom {
+  width: 20px; height: 20px; display: grid; place-items: center; border: 1px solid var(--border);
+  background: var(--wash);
+}
+.ic-colour-custom[data-custom="true"] { outline: 1px solid var(--ink); outline-offset: 1px; }
+.ic-colour-custom > span { width: 100%; height: 100%; border-radius: 4px; background: var(--ic-custom-colour); }
+.ic-colour-picker { padding: 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--wash); }
+.ic-colour-wheel-group { display: grid; grid-template-columns: minmax(76px, 1fr) minmax(72px, 1fr); align-items: center; gap: 11px; }
+.ic-colour-wheel {
+  position: relative; aspect-ratio: 1; border-radius: 50%; border: 1px solid #0002; touch-action: none; cursor: crosshair;
+  background: linear-gradient(rgb(0 0 0 / var(--ic-wheel-darkness)), rgb(0 0 0 / var(--ic-wheel-darkness))),
+    radial-gradient(circle closest-side, #fff, #fff0),
+    conic-gradient(from 90deg, red, yellow, lime, cyan, blue, magenta, red);
+}
+.ic-colour-wheel > span {
+  position: absolute; left: var(--ic-wheel-x); top: var(--ic-wheel-y); transform: translate(-50%, -50%); pointer-events: none;
+  width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 0 1px #161616b3;
+  background: var(--ic-wheel-colour);
+}
+.ic-colour-sliders { display: grid; gap: 2px; }
+.ic-colour-sliders label { display: grid; gap: 2px; color: var(--muted); font-size: 11px; }
+.ic-colour-sliders input { width: 100%; height: 13px; accent-color: var(--accent); }
+.ic-colour-hex { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: end; gap: 6px; }
+.ic-colour-preview { height: 27px; border: 1px solid var(--border); border-radius: 4px; }
+.ic-colour-rgb { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.ic-colour-rgb input { appearance: textfield; }
+.ic-colour-rgb input::-webkit-inner-spin-button { appearance: none; }
+.ic-colour-error { color: #b93d32; font-size: 11px; }
+[data-theme="dark"] .ic-colour-error { color: #ffa094; }
+.ic-colour-hint { color: var(--muted); font-size: 11px; }
+.ic-colour-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.ic-inspector .ic-colour-actions > .ic-primary { color: var(--accent-ink); background: var(--accent); }
+
 .ic-inspector-order button {
   display: grid;
   place-items: center;

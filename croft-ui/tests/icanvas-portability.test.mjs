@@ -17,7 +17,7 @@ test('editable package preserves nested canvases, media, edges, and presentation
   const mediaId = crypto.randomUUID()
   const linkedId = crypto.randomUUID()
   root.coverAssetId = mediaId
-  root.objects.push(makeObject('image', { x: -46, y: 210 }, { assetId: mediaId }))
+  root.objects.push(makeObject('image', { x: -46, y: 210 }, { assetId: mediaId, colour: '#275eb5', border: true }))
   root.objects.push(makeObject('file', { x: 150, y: 210 }, { assetId: linkedId }))
   root.stops.push({ id: crypto.randomUUID(), name: 'First stop', canvasId: originals[1].id, camera: { x: 4, y: 8, zoom: 0.6 }, duration: 2 })
   const originalAssets = [
@@ -48,6 +48,9 @@ test('editable package preserves nested canvases, media, edges, and presentation
   const image = copy.objects.find((item) => item.kind === 'image')
   assert.equal(image.assetId, importedImage.id)
   assert.equal(image.x, -46)
+  assert.equal(image.colour, '#275eb5')
+  const svg = await (await renderProjectSvg(copy, {}, assets)).blob.text()
+  assert.match(svg, /stroke="#275eb5" stroke-width="2"/)
   assert.deepEqual(Buffer.from(await importedImage.blob.arrayBuffer()), imageBytes)
   assert.deepEqual(assets.find((asset) => asset.name === 'linked.txt'), { id: copy.objects.find((item) => item.kind === 'file').assetId, name: 'linked.txt', mime: 'text/plain', size: 320, linked: true })
 })

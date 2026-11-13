@@ -2,17 +2,18 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerE
 import RBush from 'rbush'
 import {
   ArrowDownToLine, ArrowRight, Box, ChevronDown, ChevronRight, Circle, Copy, Eye, FileText, Hand, Image,
-  Layers, Lock, Maximize, Minus, MoreHorizontal, MousePointer2, PanelLeft, PenLine, Play, Plus, Redo2, RotateCw,
-  Save, Search, Square, StickyNote, Trash2, Type, Undo2, Unlink, Unlock, X,
+  Layers, Lock, LockOpen, Maximize, Minus, MoreHorizontal, MousePointer2, PanelLeft, PenLine, Play, Plus, Redo2, RotateCw,
+  Save, Search, Square, StickyNote, Trash2, Type, Undo2, Unlink, X,
 } from 'lucide-react'
 import { ancestors, createProject, descendants, edgeLabels, kinds, makeObject, objectFlags, palette,
   type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
 import {
-  connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter, renderOrigin,
-  rotatedBounds, screenToWorld, snapPoint, transformDescendant, worldToScreen, zoomAt,
+  connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, pointerAngle, rectCenter, renderOrigin,
+  rotatedBounds, screenToWorld, snapPoint, snapRotation, transformDescendant, worldToScreen, wrappedAngleDelta, zoomAt,
   type OrientedRect, type Rect,
 } from './geometry'
 import { CanvasInspector } from './CanvasInspector'
+import { readableInk } from './colour'
 import { CanvasThumbnail, ObjectContent } from './CanvasVisuals'
 import { CanvasDialog, ProjectDetails, ProjectIcon } from './ProjectViews'
 import { CanvasSaveDialogs } from './CanvasSaveDialogs'
@@ -29,13 +30,16 @@ type Modal = 'details' | 'subcanvas' | 'move' | 'trash' | 'find' | 'versions' | 
 type Indexed = { minX: number; minY: number; maxX: number; maxY: number; object: CanvasObject; index: number }
 type Gesture = { start: Point; camera: Camera; pointerId: number } & (
   { kind: 'pan' | 'marquee' } | { kind: 'move'; objects: CanvasObject[] } |
-  { kind: 'resize' | 'rotate'; object: CanvasObject } | { kind: 'stroke'; points: Point[] })
+  { kind: 'resize'; object: CanvasObject } | { kind: 'stroke'; points: Point[] } |
+  { kind: 'rotate'; object: CanvasObject; center: Point; lastAngle: number; traveled: number; preview: CanvasObject[] })
 const colourForEdge = { direction: '#537e67', connection: '#858783', relationship: '#8266a3' }
 const isEditor = (target: EventTarget | null) => target instanceof HTMLElement &&
   !!target.closest('input, textarea, select, [contenteditable], [role="dialog"], dialog')
 const shapeForAsset = (asset: CanvasAsset): ObjectKind =>
   asset.mime.startsWith('image/') ? 'image' : asset.mime.startsWith('audio/') ? 'audio' : asset.mime.startsWith('video/') ? 'video' : 'file'
 const action = (label: string, run: () => void, icon?: React.ReactNode) => ({ label, run, icon })
+const rotationIncrements = [5, 15, 30, 45, 90, 0]
+const rotationEdges = ['top', 'right', 'bottom', 'left'] as const
 const frameGeometry = ({ x, y, width, height, rotation }: OrientedRect): OrientedRect => ({ x, y, width, height, rotation })
 
 function translateObject(object: CanvasObject, dx: number, dy: number): CanvasObject {
@@ -65,6 +69,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [tool, setTool] = useState<Tool>('select')
   const [selected, setSelected] = useState<string[]>([])
+  const [rotateId, setRotateId] = useState<string>()
+  const [rotationIncrement, setRotationIncrement] = useState(15)
   const [edgeId, setEdgeId] = useState('')
   const [fromId, setFromId] = useState('')
   const [popup, setPopup] = useState<Popup>(null)
@@ -134,6 +140,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     return object && !indexed.flags.get(id)?.hidden ? [object] : []
   })
   const selectedGroup = canEdit && !play && chosen.length === 1 && chosen[0].kind === 'group' ? dragMap.get(chosen[0].id) ?? chosen[0] : undefined
+  const rotateTarget = canEdit && !play && tool === 'select' && chosen.length === 1 && chosen[0].id === rotateId &&
+    !chosen[0].collapsed && !indexed.flags.get(rotateId)?.locked ? dragMap.get(rotateId) ?? chosen[0] : undefined
+  const rotating = gesture.current?.kind === 'rotate'
+  const rotationPosition = rotateTarget && worldToScreen(rectCenter(rotateTarget), camera)
+  const selectionLocked = chosen.length === 1 && !!indexed.flags.get(chosen[0].id)?.locked
   const activeEdge = project.edges.find(edge => edge.id === edgeId)
   const panelOpen = canEdit && !play && settings.panel !== 'closed' && (chosen.length > 0 || !!activeEdge || settings.panel === 'layers')
   const selectedBounds = chosen.map(object => dragMap.get(object.id) ?? object).map(object => rotatedBounds(object, object.rotation))
@@ -200,6 +211,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const maybe = project.objects.find(object => object.id === id)
     if (maybe && !indexed.flags.get(id)?.hidden) {
       setEdgeId('')
+      if (multiple || id !== rotateId) setRotateId(undefined)
       setSelected(current => multiple ? current.includes(id) ? current.filter(entry => entry !== id) : [...current, id] : [id])
     }
   }
@@ -207,6 +219,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   function chooseTool(next: Tool) {
     setFromId('')
     setTool(next)
+    setRotateId(undefined)
     setPopup(null)
     setContextPoint(undefined)
   }
@@ -411,7 +424,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     setTool('select')
   }
 
-  function start(event: ReactPointerEvent<HTMLElement>, object?: CanvasObject, handle?: 'resize' | 'rotate') {
+  function start(event: ReactPointerEvent<HTMLElement>, object?: CanvasObject, handle?: 'resize') {
     if (play || (event.button !== 0 && event.button !== 1) || isEditor(event.target) ||
       (event.target instanceof Element && event.target.closest('audio, video, a, [data-media-control]'))) return
     const screen = localPoint(event)
@@ -455,12 +468,37 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       }
     } else {
       setSelected([])
+      setRotateId(undefined)
       setEdgeId('')
       gesture.current = { start: screen, camera, kind: 'marquee', pointerId: event.pointerId }
     }
     event.preventDefault()
     const target = gesture.current?.kind === 'move' ? event.currentTarget : stage.current
     target?.setPointerCapture(event.pointerId)
+  }
+
+  function startRotation(event: ReactPointerEvent<HTMLButtonElement>, object: CanvasObject) {
+    if (event.button !== 0 || gesture.current || !validForEdit(object) || !canTransform(expandSelection([object.id]))) return
+    const start = localPoint(event)
+    const center = worldToScreen(rectCenter(object), camera)
+    event.stopPropagation()
+    event.preventDefault()
+    gesture.current = { kind: 'rotate', start, camera, pointerId: event.pointerId, object, center,
+      lastAngle: pointerAngle(start, center), traveled: 0, preview: [] }
+    stage.current?.setPointerCapture(event.pointerId)
+  }
+
+  function updateRotation(active: Extract<Gesture, { kind: 'rotate' }>, screen: Point, free: boolean) {
+    if (Math.hypot(screen.x - active.center.x, screen.y - active.center.y) < 5) return
+    const angle = pointerAngle(screen, active.center)
+    active.traveled += wrappedAngleDelta(active.lastAngle, angle)
+    active.lastAngle = angle
+    const rotation = Math.abs(active.traveled) < .1 ? active.object.rotation
+      : snapRotation(active.object.rotation + active.traveled, free ? 0 : rotationIncrement)
+    const displayed = active.preview[0]?.rotation ?? active.object.rotation
+    if (rotation === displayed) return
+    active.preview = rotation === active.object.rotation ? [] : transformObjects(active.object, { rotation })
+    setDragged(active.preview)
   }
 
   function trackTouch(event: ReactPointerEvent<HTMLDivElement>) {
@@ -495,7 +533,10 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       if (commit && canEdit) { add(tap.kind, tap.position); setTool('select') }
       return
     }
-    if (gesture.current?.pointerId === event.pointerId) finish(commit)
+    const active = gesture.current
+    if (active?.pointerId !== event.pointerId) return
+    if (commit && active.kind === 'rotate') updateRotation(active, localPoint(event), event.altKey)
+    finish(commit)
   }
 
   function move(event: ReactPointerEvent<HTMLDivElement>) {
@@ -524,9 +565,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       setDrawing([...active.points])
     }
     if (active.kind === 'rotate') {
-      const centre = worldToScreen(rectCenter(active.object), camera)
-      const angle = Math.atan2(screen.y - centre.y, screen.x - centre.x) * 180 / Math.PI + 90
-      setDragged(transformObjects(active.object, { rotation: event.shiftKey ? Math.round(angle / 15) * 15 : angle }))
+      updateRotation(active, screen, event.altKey)
     }
     if (active.kind === 'resize') {
       const source = active.object
@@ -577,8 +616,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       add('stroke', { x, y }, { x, y, width: Math.max(...xs) - x + 4, height: Math.max(...ys) - y + 4,
         colour: palette[6], points: active.points.map(point => ({ x: point.x - x, y: point.y - y })), strokeWidth: 3 })
     }
-    if (commit && dragged.length) {
-      const next = new Map(dragged.map(object => [object.id, object]))
+    const changed = active?.kind === 'rotate' ? active.preview : dragged
+    if (commit && changed.length) {
+      const next = new Map(changed.map(object => [object.id, object]))
       edit(project.objects.map(object => next.get(object.id) ?? object))
     }
     setDragged([])
@@ -594,6 +634,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     function wheel(event: WheelEvent) {
       if (play || isEditor(event.target)) return
       event.preventDefault()
+      if (gesture.current?.kind === 'rotate') return
       const amount = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY
       setCamera(zoomAt(viewingCamera, localPoint(event), viewingCamera.zoom * Math.exp(-amount * .0018)))
     }
@@ -633,6 +674,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         return
       }
       if (key === ' ') { event.preventDefault(); space.current = true }
+      if (key === 'escape' && gesture.current?.kind === 'rotate') { event.preventDefault(); finish(false); return }
+      if (key === 'escape' && rotateTarget) { event.preventDefault(); setRotateId(undefined); return }
       if (key === 'escape') { setPopup(null); setContextPoint(undefined); setSelected([]); setFromId(''); setEdgeId(''); setTool('select') }
       if (canEdit && (key === 'delete' || key === 'backspace')) { event.preventDefault(); removeSelection() }
       if (canEdit && key.startsWith('arrow') && chosen.length) {
@@ -804,7 +847,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       event.currentTarget.value = ''
       if (picked.length) setFiles(picked)
     }} />
-    <div className="ic-stage" ref={stage} role="region" aria-label="Canvas" data-tool={tool} data-dragover={dropActive}
+    <div className="ic-stage" ref={stage} role="region" aria-label="Canvas" data-tool={tool} data-dragover={dropActive} data-rotating={rotating}
       style={{ '--ic-grid-size': gridSize + 'px', '--ic-grid-x': camera.x % gridSize + 'px', '--ic-grid-y': camera.y % gridSize + 'px' } as CSSProperties}
       data-grid={activeSettings.grid} onPointerDownCapture={trackTouch} onPointerDown={event => start(event)} onPointerMove={move}
       onPointerUp={event => endPointer(event)} onPointerCancel={event => endPointer(event, false)}
@@ -829,7 +872,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           return <div key={object.id} className="ic-item" data-kind={object.kind} data-mode={object.mode} data-selected={picked}
             data-collapsed={!!object.collapsed} data-border={!!object.border} data-from={fromId === object.id}
             style={{ left: object.x - origin.x, top: object.y - origin.y, width: object.width, height: object.collapsed ? 36 : object.height,
-              transform: `rotate(${object.rotation}deg)`, opacity: object.opacity, '--ic-item-colour': object.colour } as CSSProperties}
+              transform: `rotate(${object.rotation}deg)`, opacity: object.opacity, '--ic-item-colour': object.colour,
+              '--ic-item-ink': card ? readableInk(object.colour) : undefined } as CSSProperties}
             onPointerDown={event => { event.stopPropagation(); start(event, object) }}
             onDoubleClick={event => { event.stopPropagation(); if (!play) openObject(object) }}
             tabIndex={!play ? 0 : undefined}
@@ -848,23 +892,17 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
               <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit} replace={() => void addFiles(object.id)} />
               {card && object.caption && <small className="ic-caption">{object.caption}</small>}
             </>}
-            {canEdit && picked && !locked && <>
+            {canEdit && picked && !locked && !rotateTarget &&
               <button className="ic-handle ic-resize" tabIndex={-1} aria-label={'Resize ' + object.name}
-                onPointerDown={event => { event.stopPropagation(); start(event, object, 'resize') }} />
-              <button className="ic-handle ic-rotate" tabIndex={-1} aria-label={'Rotate ' + object.name}
-                onPointerDown={event => { event.stopPropagation(); start(event, object, 'rotate') }} />
-            </>}
+                onPointerDown={event => { event.stopPropagation(); start(event, object, 'resize') }} />}
           </div>
         })}
         {selectedGroup && <div className="ic-item ic-group-outline" data-selected="true"
           style={{ left: selectedGroup.x - origin.x, top: selectedGroup.y - origin.y, width: selectedGroup.width,
             height: selectedGroup.height, transform: `rotate(${selectedGroup.rotation}deg)` }}>
-          {validForEdit(selectedGroup) && <>
+          {validForEdit(selectedGroup) && !rotateTarget &&
             <button className="ic-handle ic-resize" tabIndex={-1} aria-label={'Resize ' + selectedGroup.name}
-              onPointerDown={event => { event.stopPropagation(); start(event, selectedGroup, 'resize') }} />
-            <button className="ic-handle ic-rotate" tabIndex={-1} aria-label={'Rotate ' + selectedGroup.name}
-              onPointerDown={event => { event.stopPropagation(); start(event, selectedGroup, 'rotate') }} />
-          </>}
+              onPointerDown={event => { event.stopPropagation(); start(event, selectedGroup, 'resize') }} />}
         </div>}
         <svg className="ic-edge-layer" width="1" height="1" aria-label="Canvas connections">
           <defs><marker id="ic-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill={colourForEdge.direction} /></marker></defs>
@@ -889,6 +927,16 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           {drawing.length > 1 && <polyline points={drawing.map(point => `${point.x - origin.x},${point.y - origin.y}`).join(' ')} fill="none" stroke={palette[6]} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
         </svg>
       </div>
+      {rotateTarget && rotationPosition && <div className="ic-rotation-outline"
+        style={{ left: rotationPosition.x, top: rotationPosition.y, width: rotateTarget.width * camera.zoom,
+          height: rotateTarget.height * camera.zoom, transform: `translate(-50%, -50%) rotate(${rotateTarget.rotation}deg)` }}>
+        {rotationEdges.map(edge => <button key={edge} type="button" className="ic-rotation-edge" data-rotate-edge={edge} tabIndex={-1}
+          aria-label={'Drag ' + edge + ' edge to rotate'} onPointerDown={event => startRotation(event, chosen[0])} />)}
+      </div>}
+      {rotateTarget && rotationPosition && <output className="ic-rotation-angle" aria-label="Rotation angle"
+        style={{ left: Math.max(23, Math.min(size.width - 23, rotationPosition.x)), top: Math.max(12, Math.min(size.height - 20, rotationPosition.y)) }}>
+        {Number(rotateTarget.rotation.toFixed(1))}°
+      </output>}
       {marquee && <div className="ic-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
       {guides?.x !== undefined && <div className="ic-guide ic-guide-x" style={{ left: guides.x }} />}
       {guides?.y !== undefined && <div className="ic-guide ic-guide-y" style={{ top: guides.y }} />}
@@ -963,20 +1011,39 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           </div>
         </div>}
         {showQuick && quick && <div className="ic-quick" role="toolbar" aria-label="Selection actions" onPointerDown={event => event.stopPropagation()}
-          style={{ left: Math.max(8, Math.min(size.width - 225, quick.x)), top: Math.max(58, quick.y - 42) }}>
+          style={{ left: Math.max(8, Math.min(size.width - (rotateTarget ? 255 : 225), quick.x)), top: Math.max(58, quick.y - (rotateTarget ? 59 : 42)) }}>
           {chosen.length === 1 && <>
             {['canvas', 'page'].includes(chosen[0].kind) && <button className="ic-icon" aria-label="Quick Preview" title="Quick Preview" onClick={() => previewObject(chosen[0])}><Eye /></button>}
             {chosen[0].kind === 'group' ? <button className="ic-icon" aria-label="Ungroup" title="Ungroup" onClick={() => ungroup(chosen[0])}><Unlink /></button> :
               <button className="ic-icon" aria-label={currentColour ? 'Remove Card' : 'Convert to Card'} title={currentColour ? 'Remove Card' : 'Convert to Card'}
                 onClick={() => changeObject(chosen[0], { mode: currentColour ? 'direct' : 'card' })}><Box /></button>}
-            <button className="ic-icon" aria-label="Rotate 15 degrees" title="Rotate 15 degrees"
-              onClick={() => changeObject(chosen[0], { rotation: (chosen[0].rotation + 15) % 360 })}><RotateCw /></button>
-            <button className="ic-icon" aria-label={chosen[0].locked ? 'Unlock' : 'Lock'} title={chosen[0].locked ? 'Unlock' : 'Lock'}
-              onClick={() => changeObject(chosen[0], { locked: !chosen[0].locked })}>{chosen[0].locked ? <Unlock /> : <Lock />}</button>
+            <button className="ic-icon" aria-label="Rotate" title={chosen[0].collapsed ? 'Expand frame to rotate' : 'Rotate · drag an edge or use arrow keys · Alt disables snapping'}
+              aria-pressed={!!rotateTarget} disabled={selectionLocked || !!chosen[0].collapsed}
+              onKeyDown={event => {
+                if (!rotateTarget || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(event.key)) return
+                event.stopPropagation()
+                if (event.key === ' ') return
+                event.preventDefault()
+                const direction = ['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : -1
+                const increment = event.altKey ? 1 : rotationIncrement || 1
+                changeObject(chosen[0], { rotation: snapRotation(chosen[0].rotation + direction * increment, 0) })
+              }}
+              onClick={() => { setTool('select'); setRotateId(rotateTarget ? undefined : chosen[0].id) }}><RotateCw /></button>
+            <button className="ic-icon" aria-label={selectionLocked ? 'Unlock' : 'Lock'} title={selectionLocked ? 'Unlock' : 'Lock'}
+              aria-pressed={selectionLocked} disabled={selectionLocked && !chosen[0].locked}
+              onClick={() => { setRotateId(undefined); changeObject(chosen[0], { locked: !chosen[0].locked }) }}>
+              {selectionLocked ? <Lock /> : <LockOpen />}
+            </button>
           </>}
           {chosen.length > 1 && <button className="ic-icon" aria-label="Group selection" title="Group selection" onClick={groupSelection}><Layers /></button>}
           <button className="ic-icon" aria-label="Duplicate" title="Duplicate" onClick={duplicate}><Copy /></button>
           <button className="ic-icon" aria-label="Delete selected" title="Delete selected" onClick={removeSelection}><Trash2 /></button>
+          {rotateTarget && <label className="ic-rotation-setting" title="Hold Alt for free rotation">
+            <span>Snap</span><select aria-label="Rotation snap increment" value={rotationIncrement}
+              onChange={event => setRotationIncrement(Number(event.currentTarget.value))}>
+              {rotationIncrements.map(value => <option value={value} key={value}>{value ? `${value}°` : 'Off'}</option>)}
+            </select>
+          </label>}
         </div>}
         {contextPoint && chosen.length === 1 && <div className="ic-menu ic-context-menu" onPointerDown={event => event.stopPropagation()}
           style={{ left: Math.max(2, Math.min(size.width - 180, contextPoint.x)), top: Math.max(2, Math.min(size.height - 106, contextPoint.y)) }}>

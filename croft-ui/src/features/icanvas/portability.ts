@@ -1,5 +1,6 @@
 import { zipSync } from 'fflate'
 import { GRID_SPACING, rotatedBounds } from './geometry.ts'
+import { readableInk } from './colour.ts'
 import { objectFlags, type CanvasAsset, type CanvasProject, type CanvasObject, type CanvasSettings } from './model.ts'
 
 export type CanvasExportFormat = 'croft' | 'zip' | 'svg' | 'png' | 'jpg' | 'pdf'
@@ -500,21 +501,26 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
     const colour = readColour(item.colour)
     const rect = `width="${item.width}" height="${item.height}"`
     const fill = `<rect ${rect} rx="8" fill="${colour}" stroke="#4d685d" stroke-opacity=".22"/>`
+    const cardInk = readableInk(colour) ?? '#26312b'
     let content: string
     if (item.kind === 'image') {
       const media = mediaChars < 48 * 1024 ** 2 ? await embedImage(item.assetId ? assetMap.get(item.assetId) : undefined) : null
       mediaChars += media?.length ?? 0
-      content = media ? `<image href="${media}" ${rect} preserveAspectRatio="xMidYMid meet"/>` : `${fill}${textSvg(`${item.name}\nImage unavailable in export`, item.width, item.height, '#26312b', 13)}`
+      const border = item.mode === 'direct' && item.border ? `<rect ${rect} rx="5" fill="none" stroke="${colour}" stroke-width="2"/>` : ''
+      content = media ? `${item.mode === 'card' ? fill : ''}<image href="${media}" ${rect} preserveAspectRatio="xMidYMid meet"/>${border}`
+        : `${fill}${textSvg(`${item.name}\nImage unavailable in export`, item.width, item.height, cardInk, 13)}`
     } else if (item.kind === 'ellipse') {
       content = `<ellipse cx="${item.width / 2}" cy="${item.height / 2}" rx="${item.width / 2}" ry="${item.height / 2}" fill="${colour}"/>`
     } else if (item.kind === 'stroke') {
       content = `<polyline points="${(item.points ?? []).map((point) => `${point.x},${point.y}`).join(' ')}" fill="none" stroke="${colour}" stroke-width="${item.strokeWidth ?? 2}" stroke-linecap="round" stroke-linejoin="round"/>`
     } else if (item.kind === 'text') {
-      content = textSvg(item.text || item.name, item.width, item.height, ink, 22, 0, 22)
+      content = (item.mode === 'card' ? fill : '') + textSvg(item.text || item.name, item.width, item.height, item.mode === 'card' ? cardInk : ink, 22, 0, 22)
     } else if (item.kind === 'frame' || item.kind === 'group') {
-      content = `<rect ${rect} rx="8" fill="${item.kind === 'group' ? 'none' : surface}" stroke="${dot}"/>${textSvg(item.name, item.width, item.height, ink, 13)}`
+      const frameFill = item.kind === 'frame' ? colour : 'none'
+      content = `<rect ${rect} rx="8" fill="${frameFill}" fill-opacity=".38" stroke="${dot}"/>${textSvg(item.name, item.width, item.height, ink, 13)}`
     } else if (item.kind === 'note' || item.kind === 'rectangle') {
-      content = fill + (item.kind === 'note' || item.text ? textSvg(item.text || item.name, item.width, item.height, '#26312b') : '')
+      const filled = item.mode === 'card' || item.kind === 'rectangle'
+      content = (filled ? fill : '') + (item.kind === 'note' || item.text ? textSvg(item.text || item.name, item.width, item.height, filled ? cardInk : ink) : '')
     } else {
       const caption = item.caption || { audio: 'Audio', video: 'Video', file: 'Attachment', canvas: 'SubCanvas', page: 'Croft page' }[item.kind]
       content = `<rect ${rect} rx="8" fill="${surface}" stroke="${dot}"/>${textSvg(`${item.name}\n${caption || ''}`, item.width, item.height, ink, 13)}`

@@ -73,6 +73,19 @@ export function pinchViewport(viewport: Viewport, initialCenter: Point, center: 
   return { x: zoomed.x + center.x - initialCenter.x, y: zoomed.y + center.y - initialCenter.y, zoom: zoomed.zoom }
 }
 
+export function pointerAngle(pointer: Point, center: Point) {
+  return Math.atan2(pointer.y - center.y, pointer.x - center.x) * 180 / Math.PI
+}
+
+export function wrappedAngleDelta(previous: number, next: number) {
+  return ((next - previous) % 360 + 540) % 360 - 180
+}
+
+export function snapRotation(angle: number, increment: number) {
+  const result = increment ? Math.round(angle / increment) * increment : angle
+  return ((result % 360) + 360) % 360
+}
+
 /** Keep compositor coordinates small without changing persisted world coordinates. */
 export function renderOrigin(viewport: Viewport): Point {
   const topLeft = screenToWorld({ x: 0, y: 0 }, viewport)
