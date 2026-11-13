@@ -202,23 +202,24 @@ function pauseOnDetach(media: HTMLMediaElement | null) {
   if (media) return () => { media.pause() }
 }
 
-function BackAttachment({ assetId, replace, edits, compare, frame, audioAppearance, dark }: {
+function BackAttachment({ assetId, replace, edits, compare, frame, audioAppearance, dark, previewScale }: {
   assetId: string; replace?: () => void; edits?: ImageEdits; compare?: boolean; frame?: { width: number; height: number }
-  audioAppearance?: AudioAppearance; dark?: boolean
+  audioAppearance?: AudioAppearance; dark?: boolean; previewScale: number
 }) {
   const media = useAssetUrl(assetId)
   if (media.problem) return <AssetAccess media={media} hasAsset replace={replace} />
   const { url, asset } = media
   if (!url || !asset) return <span role="status">Loading attachment…</span>
   if (asset.mime.startsWith('image/')) return frame && edits
-    ? <EditedImage url={url} alt={asset.name} edits={edits} compare={compare} frame={frame} />
+    ? <EditedImage url={url} alt={asset.name} edits={edits} compare={compare} frame={frame} previewScale={previewScale} />
     : <img src={url} alt={asset.name} draggable={false} />
   if (media.audioSource) return <AudioPlayer url={url} source={media.audioSource} title={asset.name} appearance={audioAppearance} dark={dark} showTitle />
   if (asset.mime.startsWith('video/')) return <video ref={pauseOnDetach} controls preload="none" src={url} aria-label={asset.name} />
   return <a className="ic-card-back-file" href={url} download={asset.name}><FileText size={14} />{asset.name}</a>
 }
 
-function CardBackFace({ object, replace, imageDraft, compareImage, dark }: Pick<ObjectContentProps, 'object' | 'imageDraft' | 'compareImage' | 'dark'> & { replace?: () => void }) {
+function CardBackFace({ object, replace, imageDraft, compareImage, dark, previewScale }:
+  Pick<ObjectContentProps, 'object' | 'imageDraft' | 'compareImage' | 'dark' | 'previewScale'> & { replace?: () => void }) {
   const { title, text, assetId, imageEdits, audioAppearance } = cardFace(object, 'back')
   const edits = imageDraft ?? imageEdits
   const textStyle = { textAlign: object.textAlign }
@@ -233,14 +234,14 @@ function CardBackFace({ object, replace, imageDraft, compareImage, dark }: Pick<
     return <>
       <div className="ic-card-back ic-card-back-with-image" style={{ height: frame.y }} data-card-scroll>{content}</div>
       <div className="ic-image-slot" style={{ left: frame.x - border, top: frame.y - border, width: frame.width, height: frame.height }}>
-        <BackAttachment assetId={assetId} replace={replace} edits={edits} compare={compareImage} frame={frame} />
+        <BackAttachment assetId={assetId} replace={replace} edits={edits} compare={compareImage} frame={frame} previewScale={previewScale} />
       </div>
     </>
   }
   return <div className="ic-card-back" data-card-scroll>
     {content}
     {assetId && <div className="ic-card-back-asset" data-media-control>
-      <BackAttachment assetId={assetId} replace={replace} audioAppearance={audioAppearance} dark={dark} />
+      <BackAttachment assetId={assetId} replace={replace} audioAppearance={audioAppearance} dark={dark} previewScale={previewScale} />
     </div>}
     {!title && !text && !assetId && <p className="ic-card-back-empty">The back is empty.</p>}
   </div>
@@ -249,17 +250,17 @@ function CardBackFace({ object, replace, imageDraft, compareImage, dark }: Pick<
 type ObjectContentProps = {
   object: CanvasObject; target?: CanvasProject; reloadMedia?: string; replace: () => void; canRelink?: boolean; replaceBack?: () => void
   imageDraft?: ImageEdits; compareImage?: boolean
-  dark?: boolean
+  dark?: boolean; previewScale: number
 }
 
 export function ObjectContent(props: ObjectContentProps) {
   return cardSide(props.object) === 'back'
     ? <CardBackFace object={props.object} replace={props.canRelink === false ? undefined : props.replaceBack}
-      imageDraft={props.imageDraft} compareImage={props.compareImage} dark={props.dark} />
+      imageDraft={props.imageDraft} compareImage={props.compareImage} dark={props.dark} previewScale={props.previewScale} />
     : <FrontContent {...props} />
 }
 
-function FrontContent({ object, target, reloadMedia, replace, canRelink = true, imageDraft, compareImage, dark }: ObjectContentProps) {
+function FrontContent({ object, target, reloadMedia, replace, canRelink = true, imageDraft, compareImage, dark, previewScale }: ObjectContentProps) {
   const media = useAssetUrl(reloadMedia)
   const { url, problem } = media
   const showsMedia = object.kind === 'audio' || object.kind === 'video' || object.kind === 'image' || object.kind === 'file'
@@ -275,7 +276,7 @@ function FrontContent({ object, target, reloadMedia, replace, canRelink = true, 
       if (!edits) return <img className="ic-image" src={url} alt={object.name} draggable={false} />
       const frame = imageFrameSize(object, 'front')
       return <div className="ic-image-slot ic-image-slot-front" style={{ left: 0, top: frame.y - frame.x, width: frame.width, height: frame.height }}>
-        <EditedImage url={url} alt={object.name} edits={edits} compare={compareImage} frame={frame} />
+        <EditedImage url={url} alt={object.name} edits={edits} compare={compareImage} frame={frame} previewScale={previewScale} />
       </div>
     }
     case 'audio': return url ? <AssetAccess media={media} hasAsset replace={canRelink ? replace : undefined} /> : <div className="ic-media-placeholder"><AudioLines size={18} /> Loading audio…</div>

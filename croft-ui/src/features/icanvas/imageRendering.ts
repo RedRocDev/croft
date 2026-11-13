@@ -2,6 +2,7 @@ import {
   defaultImageEdits, fullImageCrop, imageEffectInsets,
   type ImageEdits, type ImageInsets, type ImageRect, type ImageSize,
 } from './imageEdits.ts'
+import type { PreviewRaster } from './imagePreview.ts'
 
 const maximumPixels = 4_000_000
 const degreesToRadians = Math.PI / 180
@@ -166,10 +167,10 @@ function drawCrop(
 
 function drawPhotograph(
   image: HTMLImageElement, source: ImageSize, crop: ImageRect, photo: ImageRect,
-  width: number, height: number, scale: number, settings: ImageEdits,
+  width: number, height: number, scale: number, settings: ImageEdits, preview?: PreviewRaster,
 ) {
   const colour = needsColour(settings)
-  const result = newCanvas(width * scale, height * scale, colour)
+  const result = newCanvas(Math.min(width * scale, preview?.width ?? Infinity), Math.min(height * scale, preview?.height ?? Infinity), colour)
   const { canvas, context } = result
   if (!colour) {
     drawCrop(context, image, source, crop, photo, settings.straighten, scale)
@@ -178,7 +179,7 @@ function drawPhotograph(
 
   // Retain one small geometric sample per decoded source while a slider varies
   // colour. Never cache full exports or final effects under the source key.
-  const canCache = canvas.width * canvas.height <= 768 * 768
+  const canCache = !preview && canvas.width * canvas.height <= 768 * 768
   const key = [canvas.width, canvas.height, scale, crop.x, crop.y, crop.width, crop.height,
     photo.x, photo.y, photo.width, photo.height, settings.straighten].join(',')
   const cached = canCache ? colourSources.get(image) : undefined
@@ -197,7 +198,7 @@ function drawPhotograph(
 
 export function renderEditedImage(
   image: HTMLImageElement, edits: ImageEdits | undefined,
-  options: ImageSize & { maxSide?: number; includeEffects?: boolean },
+  options: ImageSize & { maxSide?: number; includeEffects?: boolean; preview?: PreviewRaster },
 ): RenderedImage {
   const settings = edits ?? defaultImageEdits
   const size = sourceSize(image)
@@ -209,13 +210,13 @@ export function renderEditedImage(
   const insets = options.includeEffects === false ? noInsets : imageEffectInsets(settings)
   const width = frameWidth + insets.left + insets.right
   const height = frameHeight + insets.top + insets.bottom
-  const scale = Math.min(2, (options.maxSide ?? 768) / Math.max(width, height), Math.sqrt(maximumPixels / (width * height)))
+  const scale = options.preview?.scale ?? Math.min(2, (options.maxSide ?? 768) / Math.max(width, height), Math.sqrt(maximumPixels / (width * height)))
   const crop = settings.crop ?? fullImageCrop
   const sourceCrop = { x: crop.x * size.width, y: crop.y * size.height, width: crop.width * size.width, height: crop.height * size.height }
   const mask = maskBounds(frameWidth, frameHeight, settings.mask.shape)
   const photo = positionImage(sourceCrop, mask, settings.mask)
   const clip = settings.mask.shape === 'none' ? clipBounds(mask, photo) : mask
-  const pixels = drawPhotograph(image, size, sourceCrop, photo, frameWidth, frameHeight, scale, settings)
+  const pixels = drawPhotograph(image, size, sourceCrop, photo, frameWidth, frameHeight, scale, settings, options.preview)
 
   // Mask the image pixels, which lets their alpha define the drop shadow as well.
   pixels.context.save()
@@ -225,7 +226,7 @@ export function renderEditedImage(
   pixels.context.fill()
   pixels.context.restore()
 
-  const output = newCanvas(width * scale, height * scale)
+  const output = newCanvas(options.preview?.width ?? width * scale, options.preview?.height ?? height * scale)
   const context = output.context
   context.save()
   if (options.includeEffects !== false && settings.shadow.enabled && settings.shadow.opacity) {
@@ -237,6 +238,7 @@ export function renderEditedImage(
     context.shadowOffsetY = shadow.y * scale
   }
   context.drawImage(pixels.canvas, insets.left * scale, insets.top * scale)
+  if (options.preview) pixels.canvas.width = pixels.canvas.height = 0
   context.restore()
   if (options.includeEffects !== false && settings.outline.enabled && settings.outline.width) {
     context.scale(scale, scale)

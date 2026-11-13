@@ -135,6 +135,20 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const viewingCamera = canEdit ? project.camera : readOnlyCamera ?? project.camera
   const settings = canEdit ? project.settings : { ...project.settings, ...readOnlySettings }
   const camera = play ? project.stops[play.index]?.camera ?? project.camera : cameraDraft ?? viewingCamera
+  const [previewZoom, setPreviewZoom] = useState(camera.zoom)
+  const [pixelRatio, setPixelRatio] = useState(() => window.devicePixelRatio || 1)
+  const previewScale = previewZoom * Math.min(2, pixelRatio)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setPreviewZoom(camera.zoom), 120)
+    return () => window.clearTimeout(timer)
+  }, [camera.zoom])
+  useEffect(() => {
+    const query = window.matchMedia(`(resolution: ${pixelRatio}dppx)`)
+    const sync = () => setPixelRatio(window.devicePixelRatio || 1)
+    window.addEventListener('resize', sync)
+    query.addEventListener('change', sync)
+    return () => { window.removeEventListener('resize', sync); query.removeEventListener('change', sync) }
+  }, [pixelRatio])
   const origin = renderOrigin(camera)
   const offset = worldToScreen(origin, camera)
   const gridSize = gridAtZoom(camera.zoom)
@@ -1265,7 +1279,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
             data-testid={'canvas-object-' + object.id} aria-label={object.name}>
             {atThumbnailScale ? <div className={audioFace ? 'ic-item-swatch ic-audio-swatch' : 'ic-item-swatch'}>{audioFace && <AudioLines aria-hidden="true" />}</div> : object.kind === 'frame' ? <span className="ic-frame-label"><Box size={14} /> {object.name}{object.collapsed && <small>{project.objects.filter(item => item.parentId === object.id).length} items</small>}</span> : <>
               {!isBack && card && !['canvas', 'page', 'file', 'note'].includes(object.kind) && <span className="ic-object-title">{object.name}</span>}
-              <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit && !locked} dark={dark}
+              <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit && !locked} dark={dark} previewScale={previewScale}
                 replace={() => void addFiles(object.id)} replaceBack={() => void addFiles(object.id, 'back')}
                 imageDraft={mediaKey && mediaKey === imageKey && imageDraft?.key === mediaKey ? imageDraft.edits : undefined}
                 compareImage={!!mediaKey && mediaKey === imageKey && compareImage === mediaKey} />

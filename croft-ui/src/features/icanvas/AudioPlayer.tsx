@@ -14,6 +14,8 @@ type Props = {
   showTitle?: boolean
 }
 
+const barWidth = 4
+
 function snapshot(media: HTMLAudioElement) {
   return { duration: Number.isFinite(media.duration) ? media.duration : 0, time: media.currentTime,
     playing: !media.paused && !media.ended, muted: media.muted, volume: media.volume, failed: !!media.error }
@@ -81,7 +83,9 @@ function AudioTrack({ url, source, title, appearance, dark = false, showTitle }:
       if (!active) return
       const { waveColour, progressColour, playheadColour } = colours.current
       wave = Wave.create({ container, media: element, peaks: [peaks.peaks], duration: peaks.duration,
-        height: 36, barWidth: 2, barGap: 2, barRadius: 1, barMinHeight: 0, waveColor: waveColour, progressColor: progressColour,
+        // WaveSurfer scales bar widths to device pixels but passes the radius directly to roundRect.
+        height: 36, barWidth, barGap: 2, barRadius: barWidth * Math.max(1, window.devicePixelRatio) / 2,
+        barMinHeight: 0, waveColor: waveColour, progressColor: progressColour,
         cursorColor: playheadColour, cursorWidth: 2, normalize: false, interact: false,
         fillParent: true, autoScroll: false, autoCenter: false, hideScrollbar: true })
       renderer.current = wave

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ImageEdits, ImageRect, ImageSize } from './imageEdits'
+import { imageEffectInsets, type ImageEdits, type ImageRect, type ImageSize } from './imageEdits'
+import { createImagePreview } from './imagePreview'
 import { loadImage, renderEditedImage } from './imageRendering'
 import './image-visual.css'
 
@@ -8,9 +9,8 @@ type EditedImageProps = {
   alt: string
   edits?: ImageEdits
   compare?: boolean
-  className?: string
-  frame?: ImageSize
-  maxSide?: number
+  frame: ImageSize
+  previewScale: number
 }
 
 function useImageSource(url: string) {
@@ -27,51 +27,63 @@ function useImageSource(url: string) {
   return source?.url === url ? source : undefined
 }
 
-export function EditedImage({ url, alt, edits, compare, className, frame, maxSide }: EditedImageProps) {
-  const source = useImageSource(url)
-  const wrapper = useRef<HTMLDivElement>(null)
-  const layer = useRef<HTMLDivElement>(null)
-  const [measurement, setMeasurement] = useState<ImageSize>()
-  const [renderError, setRenderError] = useState<{ url: string; message: string }>()
-  const width = frame?.width ?? measurement?.width
-  const height = frame?.height ?? measurement?.height
+export function EditedImage({ url, alt, edits, compare, frame, previewScale }: EditedImageProps) {
+  return <ImagePreview key={url} {...{ url, alt, edits, compare, frame, previewScale }} />
+}
 
-  useEffect(() => {
-    const element = wrapper.current
-    if (!element || frame) return
-    const observer = new ResizeObserver(([next]) => {
-      const { width, height } = next.contentRect
-      if (width && height) setMeasurement(previous => previous?.width === width && previous.height === height ? previous : { width, height })
-    })
-    observer.observe(element)
-    return () => observer.disconnect()
-  }, [frame?.width, frame?.height])
+function ImagePreview({ url, alt, edits, compare, frame, previewScale }: EditedImageProps) {
+  const source = useImageSource(url)
+  const layer = useRef<HTMLDivElement>(null)
+  const preview = useRef<ReturnType<typeof createImagePreview> | undefined>(undefined)
+  const scale = useRef(previewScale)
+  scale.current = previewScale
+  const [renderError, setRenderError] = useState<string>()
+  const { width, height } = frame
+  const current = compare ? undefined : edits
 
   useEffect(() => {
     const element = layer.current
-    if (!element || !source?.image || !width || !height) return
-    const pending = requestAnimationFrame(() => {
+    if (!element) return
+    const slot = createImagePreview(() => clearCanvas(element))
+    preview.current = slot
+    return () => { slot.dispose(); preview.current = undefined }
+  }, [])
+
+  useEffect(() => {
+    const element = layer.current
+    const image = source?.image
+    if (!element || !image || !width || !height) return
+    const { left, right, top, bottom } = imageEffectInsets(current)
+    preview.current?.request({ width: width + left + right, height: height + top + bottom, scale: scale.current, paint: raster => {
       try {
-        const current = compare ? undefined : edits
-        const result = renderEditedImage(source.image!, current, { width, height, maxSide })
+        const result = renderEditedImage(image, current, { width, height, preview: raster })
         const { canvas, insets } = result
         canvas.style.cssText = `left:${-insets.left}px;top:${-insets.top}px;width:${result.width}px;height:${result.height}px;`
+        clearCanvas(element)
         element.replaceChildren(canvas)
         setRenderError(undefined)
+        return true
       } catch (error) {
-        element.replaceChildren()
-        setRenderError({ url, message: error instanceof Error ? error.message : 'The image could not be rendered.' })
+        clearCanvas(element)
+        setRenderError(error instanceof Error ? error.message : 'The image could not be rendered.')
+        return false
       }
-    })
-    return () => cancelAnimationFrame(pending)
-  }, [source, url, edits, compare, width, height, maxSide])
+    } })
+  }, [source, current, width, height])
 
-  const message = source?.error ?? (renderError?.url === url ? renderError.message : undefined)
-  return <div ref={wrapper} className={['ic-edited-image', className].filter(Boolean).join(' ')}
-    style={frame ? { width: frame.width, height: frame.height, flex: '0 0 auto' } : undefined}>
-    <div key={url} ref={layer} className="ic-edited-image-paint" role="img" aria-label={alt} hidden={!source?.image || !!message} />
+  useEffect(() => { preview.current?.resize(previewScale) }, [previewScale])
+
+  const message = source?.error ?? renderError
+  return <div className="ic-edited-image" style={{ width, height, flex: '0 0 auto' }}>
+    <div ref={layer} className="ic-edited-image-paint" role="img" aria-label={alt} hidden={!source?.image || !!message} />
     {message && <span className="ic-edited-image-error" role="status">{message}</span>}
   </div>
+}
+
+function clearCanvas(layer: HTMLDivElement) {
+  const canvas = layer.firstElementChild
+  if (canvas instanceof HTMLCanvasElement) canvas.width = canvas.height = 0
+  layer.replaceChildren()
 }
 
 export function EditedImageThumbnail({ url, edits, frame }: { url: string; edits?: ImageEdits; frame: ImageRect }) {

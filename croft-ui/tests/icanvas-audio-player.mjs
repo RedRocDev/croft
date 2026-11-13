@@ -64,9 +64,17 @@ function projectFile() {
 }
 
 try {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 950 }, acceptDownloads: true, reducedMotion: 'reduce' })
+  const context = await browser.newContext({ viewport: { width: 1440, height: 950 }, deviceScaleFactor: 2, acceptDownloads: true, reducedMotion: 'reduce' })
   await context.addInitScript(() => {
     window.qaDecodeCount = 0
+    window.qaWaveBar = null
+    const roundRect = CanvasRenderingContext2D.prototype.roundRect
+    CanvasRenderingContext2D.prototype.roundRect = function (x, y, width, height, radius) {
+      if (this.canvas.getRootNode().host?.closest('.ic-audio-wave-render') && height > width) {
+        window.qaWaveBar = { width, radius }
+      }
+      return roundRect.call(this, x, y, width, height, radius)
+    }
     const decode = BaseAudioContext.prototype.decodeAudioData
     BaseAudioContext.prototype.decodeAudioData = function (...args) {
       window.qaDecodeCount++
@@ -129,6 +137,9 @@ try {
   const direct = item('Direct shared audio')
   await waveform(card).waitFor()
   await waveform(direct).waitFor()
+  await page.waitForFunction(() => window.qaWaveBar)
+  const waveBar = await page.evaluate(() => window.qaWaveBar)
+  assert.ok(waveBar.radius > 0 && waveBar.radius === waveBar.width / 2, 'Waveform bars should have round caps at 2× device scale')
   assert.equal(await page.evaluate(() => window.qaDecodeCount), 1, 'Shared source decoded more than once or over-limit source decoded')
   assert.equal(await button('Undo').isDisabled(), true)
   assert.equal(await audio(card).count(), 1)

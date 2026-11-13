@@ -78,26 +78,27 @@ try {
   await canvas.waitFor()
   const button = name => page.getByRole('button', { name, exact: true })
   const metrics = []
+  const previews = []
   if (screenshots) await mkdir(screenshots, { recursive: true })
-  const capture = async (label, expectedZoom) => {
+  const capture = async (label, expectedZoom, expectedWidth) => {
     const zoom = Number.parseFloat(await button('Zoom settings').innerText())
     assert.equal(zoom, expectedZoom)
+    await page.waitForFunction(width => document.querySelector('.ic-edited-image-paint canvas')?.width === width, expectedWidth)
     const result = await canvas.evaluate(element => {
       const projected = element.getBoundingClientRect()
       return { backing: [element.width, element.height], projected: [Math.round(projected.width), Math.round(projected.height)] }
     })
     metrics.push({ zoom, ...result })
+    previews.push(await canvas.evaluate(element => element.toDataURL('image/png').split(',')[1]))
     if (screenshots) await page.screenshot({ path: path.join(screenshots, `icanvas-image-resolution-${label}.png`) })
   }
-  await capture('100', 100)
+  await capture('100', 100, 1440)
   for (let click = 0; click < 3; click++) await button('Zoom out').click()
-  await capture('51', 51)
+  await capture('51', 51, 737)
   for (let click = 0; click < 7; click++) await button('Zoom in').click()
-  await capture('244', 244)
-  assert.deepEqual(metrics.map(entry => entry.backing), [[768, 512], [768, 512], [768, 512]])
+  await capture('244', 244, 2172)
+  assert.deepEqual(metrics.map(entry => entry.backing), [[1440, 960], [737, 491], [2172, 1448]])
   assert.deepEqual(metrics.map(entry => entry.projected), [[1440, 960], [737, 492], [3516, 2344]])
-
-  const live = await canvas.evaluate(element => element.toDataURL('image/png').split(',')[1])
 
   async function download(format) {
     await button('Project menu').click()
@@ -123,7 +124,7 @@ try {
   assert.notEqual(hash(Buffer.from(flattened, 'base64')), asset.sha256)
   assert.deepEqual(manifest.projects[0].objects[0].imageEdits, imageEdits)
 
-  const resolution = await page.evaluate(async ({ live, flattened, output, original }) => {
+  const resolution = await page.evaluate(async ({ previews, flattened, output, original }) => {
     async function read(encoded) {
       const image = new Image()
       image.src = `data:image/png;base64,${encoded}`
@@ -146,25 +147,27 @@ try {
     }
 
     const source = await read(original)
-    const preview = await read(live)
+    const adaptive = await Promise.all(previews.map(read))
     const embedded = await read(flattened)
     const png = await read(output)
     return {
       source: contrast(source, 384, 256, 3840, 2560),
-      preview: contrast(preview, 0, 0, 768, 512),
+      previews: adaptive.map(preview => contrast(preview, 0, 0, preview.raster.width, preview.raster.height)),
       embedded: contrast(embedded, 0, 0, 1600, 1600 / 1.5),
       png: contrast(png, 32, 32, 1440, 960),
-      solid: [preview, embedded, png].map(({ raster, context }, index) => {
-        const edge = index === 2 ? 32 : 0
+      solid: [...adaptive, embedded, png].map(({ raster, context }, index) => {
+        const edge = index === adaptive.length + 1 ? 32 : 0
         return [...context.getImageData(Math.floor((raster.width - edge * 2) * .32 + edge), Math.floor((raster.height - edge * 2) * .4 + edge), 1, 1).data]
       }),
     }
-  }, { live, flattened, output: staticPng.toString('base64'), original: original.toString('base64') })
+  }, { previews, flattened, output: staticPng.toString('base64'), original: original.toString('base64') })
 
   assert.deepEqual(resolution.source.resolution, [source.width, source.height])
   assert.deepEqual(resolution.embedded.resolution, [1600, 1067])
   assert.deepEqual(resolution.png.resolution, [1504, 1024])
-  assert.ok(resolution.preview.fineStripeLumaRange < resolution.embedded.fineStripeLumaRange, 'The export retains more detail at the finest stripes.')
+  assert.ok(resolution.previews[1].fineStripeLumaRange < resolution.embedded.fineStripeLumaRange, 'The zoomed-out preview can show less fine detail than export.')
+  assert.ok(resolution.previews[0].fineStripeLumaRange > resolution.previews[1].fineStripeLumaRange + 30, 'The 100% preview must resolve more of the test stripes.')
+  assert.ok(resolution.previews[2].fineStripeLumaRange >= resolution.embedded.fineStripeLumaRange - 10, 'The 244% preview must approach the exported photo detail.')
   assert.ok(resolution.solid.every(pixel => pixel.every((value, index) => Math.abs(value - resolution.solid[0][index]) <= 3)), 'Solid image content agrees across preview and export.')
   if (screenshots) await writeFile(path.join(screenshots, 'icanvas-image-resolution-export.png'), staticPng)
   assert.deepEqual(errors, [])
