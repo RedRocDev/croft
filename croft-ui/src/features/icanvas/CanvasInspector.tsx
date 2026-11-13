@@ -5,15 +5,26 @@ import {
   Eye, EyeOff, Layers, Lock, SlidersHorizontal, Unlock, X,
 } from 'lucide-react'
 import {
-  kinds, objectFlags,
+  canFlip, cardSide, kinds, objectFlags,
   type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings,
 } from './model'
 import './inspector.css'
 
 type LayerDirection = 'front' | 'back' | 'forward' | 'backward'
 type UpdateObject = (object: CanvasObject, patch: Partial<CanvasObject>) => void
+type CardActions = {
+  flipCard?: (object: CanvasObject) => void
+  editBack?: (object: CanvasObject) => void
+  attachBack?: (object: CanvasObject) => void
+  removeBackAttachment?: (object: CanvasObject) => void
+  selectStackMember?: (stack: CanvasObject, member: CanvasObject) => void
+  removeFromStack?: (member: CanvasObject) => void
+  setStackFanned?: (stack: CanvasObject, fanned: boolean) => void
+  unstack?: (stack: CanvasObject) => void
+  deleteStack?: (stack: CanvasObject) => void
+}
 
-interface InspectorProps {
+interface InspectorProps extends CardActions {
   project: CanvasProject
   selected: CanvasObject[]
   activeEdge?: CanvasEdge
@@ -73,6 +84,7 @@ function TextField({ label, value, onCommit, multiline = false, required = false
     onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setDraft(event.currentTarget.value),
     onBlur: commit,
     onKeyDown: (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      if (event.nativeEvent.isComposing) return
       if (event.key === 'Escape') {
         event.stopPropagation()
         setDraft(null)
@@ -89,7 +101,8 @@ function TextField({ label, value, onCommit, multiline = false, required = false
   </label>
 }
 
-function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fitFrame }: {
+function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fitFrame, flipCard, editBack, attachBack,
+  removeBackAttachment, selectStackMember, removeFromStack, setStackFanned, unstack, deleteStack }: CardActions & {
   object: CanvasObject
   objects: ReadonlyMap<string, CanvasObject>
   update: UpdateObject
@@ -101,6 +114,8 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
   const parentLocked = parent ? objectFlags(parent, objects).locked : false
   const locked = object.locked || parentLocked
   const frame = object.kind === 'frame'
+  const stack = object.stack
+  const side = cardSide(object)
   const hasContent = object.kind === 'text' || object.kind === 'note'
   const frames = Array.from(objects.values()).filter(candidate => {
     if (candidate.kind !== 'frame' || candidate.id === object.id) return false
@@ -137,19 +152,56 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
       </button>
     </div>
     {parentLocked && <p className="ic-inspector-status">Locked by a parent layer.</p>}
+    {canFlip(object) && (flipCard || editBack) && <fieldset className="ic-inspector-section">
+      <legend>Card faces</legend>
+      <p className="ic-colour-hint">Showing {side === 'back' ? 'Back' : 'Front'}</p>
+      <div className="ic-inspector-card-actions">
+        {flipCard && <button type="button" className="ic-button" onClick={() => flipCard(object)}>
+          {side === 'back' ? 'Show Front' : 'Show Back'}
+        </button>}
+        {editBack && <button type="button" className="ic-button" disabled={locked} onClick={() => editBack(object)}>Edit Back</button>}
+        {attachBack && <button type="button" className="ic-button" disabled={locked} onClick={() => attachBack(object)}>
+          {object.back?.assetId ? 'Replace Back attachment' : 'Add Back attachment'}
+        </button>}
+        {object.back?.assetId && removeBackAttachment && <button type="button" className="ic-button" disabled={locked}
+          onClick={() => removeBackAttachment(object)}>Remove Back attachment</button>}
+      </div>
+    </fieldset>}
+    {stack && <fieldset className="ic-inspector-section">
+      <legend>Stack members</legend>
+      <ol className="ic-inspector-stack-members">
+        {stack.order.map(id => {
+          const member = objects.get(id)
+          if (!member || !selectStackMember) return null
+          return <li key={id}><button type="button" className="ic-button" onClick={() => selectStackMember(object, member)}>{member.name}</button></li>
+        })}
+      </ol>
+      <div className="ic-inspector-card-actions">
+        {setStackFanned && <button type="button" className="ic-button" disabled={locked}
+          onClick={() => setStackFanned(object, stack.layout === 'compact')}>{stack.layout === 'compact' ? 'Fan Out' : 'Restack'}</button>}
+        {unstack && <button type="button" className="ic-button" disabled={locked} onClick={() => unstack(object)}>Unstack All</button>}
+        {deleteStack && <button type="button" className="ic-button" disabled={locked} onClick={() => deleteStack(object)}>Delete stack…</button>}
+      </div>
+    </fieldset>}
+    {parent?.kind === 'stack' && removeFromStack && <fieldset className="ic-inspector-section" disabled={locked}>
+      <legend>{parent.name}</legend>
+      <button type="button" className="ic-button" onClick={() => removeFromStack(object)}>Remove from Stack</button>
+    </fieldset>}
     <fieldset className="ic-inspector-section" disabled={locked}>
       <legend>Details</legend>
       <TextField label="Name" value={object.name} required onCommit={name => update(object, { name })} />
       {hasContent && <TextField label="Content" value={object.text} multiline onCommit={text => update(object, { text })} />}
-      <TextField label="Caption" value={object.caption ?? ''} onCommit={caption => update(object, { caption })} />
+      {!stack && <><TextField label="Caption" value={object.caption ?? ''} onCommit={caption => update(object, { caption })} />
       <label className="ic-inspector-field">
         <span>Display</span>
         <select value={object.mode} onChange={event => update(object, { mode: event.currentTarget.value === 'card' ? 'card' : 'direct' })}>
-          <option value="direct">Direct</option>
+          <option value="direct" disabled={parent?.kind === 'stack' && object.kind !== 'note'}>Direct</option>
           <option value="card">Card</option>
         </select>
       </label>
-      {(frames.length > 0 || parent) && <label className="ic-inspector-field">
+      {!canFlip(object) && object.back && <p className="ic-colour-hint">Switch to Card to show the saved back.</p>}
+      </>}
+      {parent?.kind !== 'stack' && (frames.length > 0 || parent) && <label className="ic-inspector-field">
         <span>Container</span>
         <select value={parent?.id ?? ''} onChange={event => moveIntoFrame(object, event.currentTarget.value)}>
           <option value="">Canvas</option>
@@ -213,6 +265,14 @@ function ObjectLayers({ objects, selected, select, update }: {
       siblings.push(object)
       byParent.set(parentId, siblings)
     }
+    for (const object of objects) {
+      if (!object.stack) continue
+      const members = new Map(byParent.get(object.id)?.map(member => [member.id, member]))
+      byParent.set(object.id, object.stack.order.flatMap(id => {
+        const member = members.get(id)
+        return member ? [member] : []
+      }))
+    }
     return { byId, byParent }
   }, [objects])
   const selectedIds = new Set(selected.map(object => object.id))
@@ -258,7 +318,7 @@ function ObjectLayers({ objects, selected, select, update }: {
   return objects.length ? layers() : <p className="ic-inspector-status">This canvas has no layers yet.</p>
 }
 
-export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings }: InspectorProps) {
+export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings, ...cardActions }: InspectorProps) {
   const bodyId = useId()
   const panel = project.settings.panel
   if (panel === 'closed') return null
@@ -282,7 +342,7 @@ export function CanvasInspector({ project, selected, activeEdge, select, update,
           <legend>{edge.kind.charAt(0).toUpperCase() + edge.kind.slice(1)}</legend>
           <TextField label="Label" value={edge.label} onCommit={label => updateEdge(edge, { label })} />
         </fieldset> :
-        object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} /> :
+        object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} {...cardActions} /> :
         <p className="ic-inspector-status">{selected.length ? selected.length + ' objects selected. Select one object to edit its properties.' : 'Select an object or connection to inspect it.'}</p>}
     </div>
   </aside>

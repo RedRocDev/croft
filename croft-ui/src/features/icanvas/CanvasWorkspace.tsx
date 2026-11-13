@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import RBush from 'rbush'
 import {
-  ArrowDownToLine, ArrowRight, Box, ChevronDown, ChevronRight, Circle, Copy, Eye, FileText, Hand, Image,
+  ArrowDownToLine, ArrowRight, Box, ChevronDown, ChevronRight, Circle, Copy, Eye, FileText, GripHorizontal, Hand, Image,
   Layers, Lock, LockOpen, Maximize, Minus, MoreHorizontal, MousePointer2, PanelLeft, PenLine, Play, Plus, Redo2, RotateCw,
   Save, Search, Square, StickyNote, Trash2, Type, Undo2, Unlink, X,
 } from 'lucide-react'
-import { ancestors, createProject, descendants, edgeLabels, kinds, makeObject, objectFlags, palette,
-  type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
+import { ancestors, canFlip, cardFace, cardSide, createProject, descendants, edgeLabels, kinds, makeObject, objectFlags, palette, searchCanvasObjects,
+  type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type CardSide, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
 import {
   connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, pointerAngle, rectCenter, renderOrigin,
   resizeFromCorner, rotatedBounds, screenToWorld, snapPoint, snapRotation, transformDescendant, worldToScreen, wrappedAngleDelta, zoomAt,
@@ -15,21 +15,24 @@ import {
 import { CanvasInspector } from './CanvasInspector'
 import { readableInk } from './colour'
 import { CanvasThumbnail, ObjectContent } from './CanvasVisuals'
+import { CardBackEditor, CardFlipControl } from './CardFaces'
 import { CanvasDialog, ProjectDetails, ProjectIcon } from './ProjectViews'
 import { CanvasSaveDialogs } from './CanvasSaveDialogs'
 import { CanvasBackupDialog } from './CanvasBackupDialog'
 import { CanvasExportDialog } from './CanvasExportDialog'
 import { droppedCanvasFiles, ImportDialog, pickCanvasFiles, type CanvasFile, type CanvasPreparedAsset } from './ImportDialog'
 import { useCanvasEditing } from './useCanvasEditing'
+import { addToStack, canAddToStack, canStackCards, createStack, extractFromStack, layoutStacks, setStackLayout, showStackMember, unstackAll } from './stackScene'
 import type { useCanvasProjects } from './useCanvasProjects'
 import './canvas.css'
+import './stacks.css'
 
 type Tool = 'select' | 'hand' | 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'frame' | EdgeKind
 type Popup = 'save' | 'view' | 'tools' | 'add' | 'edges' | 'shapes' | 'project' | 'zoom' | null
-type Modal = 'details' | 'subcanvas' | 'move' | 'trash' | 'find' | 'versions' | 'checkpoint' | 'recovery' | 'copy' | 'export' | 'backup' | 'presentation' | 'embed' | 'link' | 'preview' | null
+type Modal = 'details' | 'subcanvas' | 'move' | 'trash' | 'find' | 'versions' | 'checkpoint' | 'recovery' | 'copy' | 'export' | 'backup' | 'presentation' | 'embed' | 'link' | 'preview' | 'deleteStack' | null
 type Indexed = { minX: number; minY: number; maxX: number; maxY: number; object: CanvasObject; index: number }
 type Gesture = { start: Point; camera: Camera; pointerId: number } & (
-  { kind: 'pan' | 'marquee' } | { kind: 'move'; objects: CanvasObject[] } |
+  { kind: 'pan' | 'marquee' } | { kind: 'move'; objects: CanvasObject[]; pickup?: CanvasObject; drop?: string; preview: CanvasObject[] } |
   { kind: 'resize'; object: CanvasObject; excluded: Set<string>; preview: CanvasObject[] } | { kind: 'stroke'; points: Point[] } |
   { kind: 'rotate'; object: CanvasObject; center: Point; lastAngle: number; traveled: number; preview: CanvasObject[] })
 const colourForEdge = { direction: '#537e67', connection: '#858783', relationship: '#8266a3' }
@@ -51,12 +54,12 @@ function translateObject(object: CanvasObject, dx: number, dy: number): CanvasOb
 export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef, toggleSidebar, openCanvas, goHome, openPage, jump, dark }: {
   project: CanvasProject; store: ReturnType<typeof useCanvasProjects>; sidebarOpen: boolean
   sidebarToggleRef: RefObject<HTMLButtonElement | null>; toggleSidebar: () => void
-  openCanvas: (id: string, objectId?: string) => void; goHome: () => void; openPage: (id: string) => void
-  jump?: { id: string; event: number }; dark: boolean
+  openCanvas: (id: string, objectId?: string, side?: CardSide) => void; goHome: () => void; openPage: (id: string) => void
+  jump?: { id: string; event: number; side?: CardSide }; dark: boolean
 }) {
   const { projects, update, write, flush, refresh, status, error } = store
   const canEdit = store.access === 'writer'
-  const { edit, step, canUndo, canRedo, resetHistory } = useCanvasEditing(project, update)
+  const { edit, record, step, canUndo, canRedo, resetHistory } = useCanvasEditing(project, update)
   const stage = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const toolbar = useRef<HTMLDivElement>(null)
@@ -84,8 +87,14 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const [readOnlySettings, setReadOnlySettings] = useState<Partial<CanvasSettings>>({})
   const [toolbarDraft, setToolbarDraft] = useState<Point>()
   const [editing, setEditing] = useState<CanvasObject>()
+  const [editingBack, setEditingBack] = useState<string>()
   const [files, setFiles] = useState<CanvasFile[]>()
   const [replaceId, setReplaceId] = useState('')
+  const [replaceSide, setReplaceSide] = useState<CardSide>('front')
+  const [stackToDelete, setStackToDelete] = useState<string>()
+  const [stackDrop, setStackDrop] = useState<string>()
+  const [pileMenu, setPileMenu] = useState<string>()
+  const [readerView, setReaderView] = useState<CanvasObject[]>([])
   const [dropActive, setDropActive] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [placement, setPlacement] = useState<Placement>(() => {
@@ -109,6 +118,16 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const origin = renderOrigin(camera)
   const offset = worldToScreen(origin, camera)
   const gridSize = gridAtZoom(camera.zoom)
+  const readerObjects = useMemo(() => {
+    if (play || !readerView.length) return stageProject.objects
+    const overrides = new Map(readerView.map(object => [object.id, object]))
+    const map = new Map(stageProject.objects.map(object => [object.id, object]))
+    return stageProject.objects.map(object => {
+      const override = overrides.get(object.id)
+      if (!override || (canEdit && (object.kind !== 'stack' || !objectFlags(object, map).locked))) return object
+      return { ...object, visibleSide: override.visibleSide, stack: override.stack }
+    })
+  }, [canEdit, play, readerView, stageProject.objects])
 
   function startPresentation(automatic = false, loop = false, smooth = true) {
     if (!project.stops.length) return
@@ -117,23 +136,35 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   }
 
   const indexed = useMemo(() => {
-    const map = new Map(stageProject.objects.map(object => [object.id, object]))
-    const flags = new Map(stageProject.objects.map(object => [object.id, objectFlags(object, map)]))
-    const visible = stageProject.objects.filter(object => !flags.get(object.id)?.hidden && object.kind !== 'group')
+    const map = new Map(readerObjects.map(object => [object.id, object]))
+    const flags = new Map(readerObjects.map(object => [object.id, objectFlags(object, map)]))
+    const pileLayout = layoutStacks(readerObjects)
+    const visible = readerObjects.filter(object => !flags.get(object.id)?.hidden && object.kind !== 'group' && object.kind !== 'stack' && !pileLayout.obscured.has(object.id))
+      .map(object => pileLayout.cards.get(object.id) ?? object)
+    const order = new Map(readerObjects.map((object, index) => [object.id, index]))
     const tree = new RBush<Indexed>()
-    tree.load(visible.map((object, index) => {
+    tree.load(visible.map(object => {
       const box = rotatedBounds(object.collapsed ? { ...object, height: 36 } : object, object.rotation)
-      return { minX: box.left, minY: box.top, maxX: box.right, maxY: box.bottom, object, index }
+      const layer = object.parentId && pileLayout.piles.has(object.parentId) ? object.parentId : object.id
+      return { minX: box.left, minY: box.top, maxX: box.right, maxY: box.bottom, object, index: order.get(layer) ?? 0 }
     }))
-    return { map, flags, visible, tree }
-  }, [stageProject.objects])
+    return { map, flags, visible, tree, pileLayout }
+  }, [readerObjects])
   const dragMap = new Map(dragged.map(object => [object.id, object]))
+  const displayedPiles = useMemo(() => {
+    if (!dragged.length || !indexed.pileLayout.piles.size) return indexed.pileLayout
+    const updates = new Map(dragged.map(object => [object.id, object]))
+    return layoutStacks(readerObjects.map(object => updates.get(object.id) ?? object))
+  },
+  [indexed, readerObjects, dragged])
+  const projected = (object: CanvasObject) => displayedPiles.cards.get(object.id) ?? dragMap.get(object.id) ?? object
   const topLeft = screenToWorld({ x: -100, y: -100 }, camera)
   const bottomRight = screenToWorld({ x: size.width + 100, y: size.height + 100 }, camera)
   const rendered = indexed.tree.search({ minX: topLeft.x, minY: topLeft.y, maxX: bottomRight.x, maxY: bottomRight.y })
-    .sort((a, b) => a.index - b.index).map(item => dragMap.get(item.object.id) ?? item.object)
+    .filter(item => !displayedPiles.obscured.has(item.object.id)).sort((a, b) => a.index - b.index).map(item => projected(item.object))
   const displayed = new Set(rendered.map(object => object.id))
-  for (const object of dragged) if (!displayed.has(object.id) && object.kind !== 'group' && !indexed.flags.get(object.id)?.hidden) rendered.push(object)
+  for (const object of dragged) if (!displayed.has(object.id) && !['group', 'stack'].includes(object.kind) && !indexed.flags.get(object.id)?.hidden && !displayedPiles.obscured.has(object.id)) rendered.push(projected(object))
+  for (const [id, card] of displayedPiles.cards) if (indexed.pileLayout.obscured.has(id) && !displayed.has(id)) rendered.push(card)
   const renderedIds = new Set(rendered.map(object => object.id))
   const chosen = selected.flatMap(id => {
     const object = indexed.map.get(id)
@@ -141,13 +172,16 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   })
   const selectedGroup = canEdit && !play && chosen.length === 1 && chosen[0].kind === 'group' ? dragMap.get(chosen[0].id) ?? chosen[0] : undefined
   const rotateTarget = canEdit && !play && tool === 'select' && chosen.length === 1 && chosen[0].id === rotateId &&
-    !chosen[0].collapsed && !indexed.flags.get(rotateId)?.locked ? dragMap.get(rotateId) ?? chosen[0] : undefined
+    !chosen[0].collapsed && !indexed.flags.get(rotateId)?.locked ? projected(chosen[0]) : undefined
   const rotating = gesture.current?.kind === 'rotate'
   const rotationPosition = rotateTarget && worldToScreen(rectCenter(rotateTarget), camera)
   const selectionLocked = chosen.length === 1 && !!indexed.flags.get(chosen[0].id)?.locked
   const activeEdge = project.edges.find(edge => edge.id === edgeId)
   const panelOpen = canEdit && !play && settings.panel !== 'closed' && (chosen.length > 0 || !!activeEdge || settings.panel === 'layers')
-  const selectedBounds = chosen.map(object => dragMap.get(object.id) ?? object).map(object => rotatedBounds(object, object.rotation))
+  const selectedBounds = chosen.map(object => {
+    const front = displayedPiles.piles.get(object.id)?.frontId
+    return (front && displayedPiles.cards.get(front)) || projected(object)
+  }).map(object => rotatedBounds(object, object.rotation))
   const quick = selectedBounds.length ? worldToScreen({
     x: Math.min(...selectedBounds.map(box => box.left)), y: Math.min(...selectedBounds.map(box => box.top)),
   }, camera) : undefined
@@ -172,7 +206,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     return () => observer.disconnect()
   }, [])
 
-  function jumpTo(id: string) {
+  function jumpTo(id: string, side?: CardSide) {
     const item = project.objects.find(object => object.id === id)
     if (!item || !size.width) return
     if (indexed.flags.get(id)?.hidden) {
@@ -180,16 +214,25 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       updateSettings({ panel: 'layers' })
       return
     }
-    setSelected([id])
+    revealCard(item, side, true)
     setEdgeId('')
-    setCamera(fitViewport([item], size, { max: 1.6 }))
+    const pile = item.parentId ? indexed.pileLayout.piles.get(item.parentId) : undefined
+    const focus = item.kind === 'stack' && item.stack ? indexed.pileLayout.cards.get(item.stack.order[0]) ?? item
+      : pile ? { ...item, x: pile.stack.x + (pile.stack.width - item.width) / 2, y: pile.stack.y + (pile.stack.height - item.height) / 2 } : item
+    const nextCamera = fitViewport([focus], size, { max: 1.6 })
+    if (canEdit) {
+      const objects = revealObjects(item, side)
+      if (objects === project.objects) setCamera(nextCamera)
+      else edit(objects, project.edges, nextCamera)
+    }
+    else setReadOnlyCamera(nextCamera)
   }
 
   const completedJump = useRef<number | undefined>(undefined)
   useEffect(() => {
     if (jump && size.width && completedJump.current !== jump.event) {
       completedJump.current = jump.event
-      jumpTo(jump.id)
+      jumpTo(jump.id, jump.side)
     }
   }, [jump, size.width])
 
@@ -216,6 +259,79 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     }
   }
 
+  function revealObjects(object: CanvasObject, side?: CardSide) {
+    const parent = object.parentId ? indexed.map.get(object.parentId) : undefined
+    let objects = canEdit ? project.objects : readerObjects
+    if (parent?.stack && parent.stack.order[0] !== object.id && !(canEdit && indexed.flags.get(parent.id)?.locked)) {
+      // Browsing is allowed on locks. Hidden/collapsed ownership still governs visibility.
+      objects = showStackMember(objects, parent.id, object.id, { preview: true })
+    }
+    if (side && canFlip(object) && cardSide(indexed.map.get(object.id) ?? object) !== side) {
+      objects = objects.map(item => item.id === object.id ? { ...item, visibleSide: side } : item)
+    }
+    return objects
+  }
+
+  function revealCard(object: CanvasObject, side?: CardSide, jump = false) {
+    if (indexed.flags.get(object.id)?.hidden) { setFeedback('Show the card or expand its frame in Layers first.'); return }
+    if (side === 'back' && !canFlip(object)) setFeedback('This object’s Back is preserved. Switch its display to Card to see it.')
+    const objects = revealObjects(object, side)
+    if (canEdit) {
+      const parent = object.parentId ? indexed.map.get(object.parentId) : undefined
+      if (parent?.stack && indexed.flags.get(parent.id)?.locked && parent.stack.order[0] !== object.id) {
+        const order = [object.id, ...parent.stack.order.filter(id => id !== object.id)]
+        setReaderView(current => [...current.filter(item => item.id !== parent.id), { ...parent, stack: { ...parent.stack!, order } }])
+      }
+      if (!jump && objects !== project.objects) edit(objects)
+    } else {
+      setReaderView(objects.filter((item, index) => item !== project.objects[index]))
+    }
+    pick(object.id)
+  }
+
+  function flipCard(object: CanvasObject) {
+    const current = indexed.map.get(object.id) ?? object
+    if (!canFlip(current) || indexed.flags.get(current.id)?.hidden) return
+    const visibleSide = cardSide(current) === 'front' ? 'back' : 'front'
+    if (canEdit) edit(project.objects.map(item => item.id === current.id ? { ...item, visibleSide } : item))
+    else setReaderView(items => [...items.filter(item => item.id !== current.id), { ...current, visibleSide }])
+    pick(current.id)
+  }
+
+  function stackAction(action: () => CanvasObject[], select?: string) {
+    if (!canEdit) return
+    try {
+      const objects = action()
+      const ids = new Set(objects.map(item => item.id))
+      edit(objects, project.edges.filter(edge => ids.has(edge.from) && ids.has(edge.to)))
+      if (select) { setSelected([select]); setEdgeId('') }
+    } catch (reason) { onError(reason) }
+  }
+
+  function stackSelection() {
+    if (!canEdit) return
+    try {
+      const { stackId, objects } = createStack(project.objects, selected)
+      edit(objects)
+      setSelected([stackId])
+      setContextPoint(undefined)
+    } catch (reason) { onError(reason) }
+  }
+
+  function removeFromStack(member: CanvasObject) {
+    if (member.parentId) stackAction(() => extractFromStack(project.objects, member.parentId!, member.id), member.id)
+  }
+
+  function changeStackLayout(stack: CanvasObject, fanned: boolean) {
+    if (canEdit) stackAction(() => setStackLayout(project.objects, stack.id, fanned ? 'fan' : 'compact'))
+    else {
+      try {
+        const current = setStackLayout(readerObjects, stack.id, fanned ? 'fan' : 'compact', { preview: true })
+        setReaderView(current.filter((item, index) => item !== stageProject.objects[index]))
+      } catch (reason) { onError(reason) }
+    }
+  }
+
   function chooseTool(next: Tool) {
     setFromId('')
     setTool(next)
@@ -226,7 +342,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
 
   function transformObjects(object: CanvasObject, patch: Partial<CanvasObject>): CanvasObject[] {
     const next = { ...object, ...patch }
-    const container = object.kind === 'group' || object.kind === 'frame'
+    const container = object.kind === 'group' || object.kind === 'frame' || object.kind === 'stack'
     const moving = next.x !== object.x || next.y !== object.y
     const resizing = next.width !== object.width || next.height !== object.height
     const rotating = next.rotation !== object.rotation
@@ -254,6 +370,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   function changeObject(object: CanvasObject, patch: Partial<CanvasObject>) {
     if (!canEdit) return
     if (!validForEdit(object) && patch.locked === undefined && patch.hidden === undefined) return
+    const parent = object.parentId ? indexed.map.get(object.parentId) : undefined
+    if (parent?.kind === 'stack' && patch.mode && !canFlip({ ...object, mode: patch.mode })) {
+      setFeedback('Remove this member from its stack before switching to Direct display.')
+      return
+    }
     const next = new Map(transformObjects(object, patch).map(item => [item.id, item]))
     if (next.size) edit(project.objects.map(item => next.get(item.id) ?? item))
   }
@@ -270,6 +391,19 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const objects = [...project.objects]
     const index = objects.findIndex(object => object.id === id)
     if (index < 0 || !validForEdit(objects[index])) return
+    const parentId = objects[index].parentId
+    const parent = parentId ? indexed.map.get(parentId) : undefined
+    if (parent?.stack) {
+      const order = [...parent.stack.order]
+      const previous = order.indexOf(id)
+      const next = direction === 'front' ? 0 : direction === 'back' ? order.length - 1 : previous + (direction === 'forward' ? -1 : 1)
+      if (previous < 0 || next < 0 || next >= order.length || previous === next) return
+      order.splice(previous, 1)
+      order.splice(next, 0, id)
+      edit(objects.map(item => item.id === parent.id ? { ...item, stack: { ...parent.stack!, order } } : item))
+      if (order[0] !== id && parent.stack.layout === 'compact') setSelected([parent.id])
+      return
+    }
     const next = direction === 'front' ? objects.length - 1 : direction === 'back' ? 0 : index + (direction === 'forward' ? 1 : -1)
     if (next === index || next < 0 || next >= objects.length) return
     const [object] = objects.splice(index, 1)
@@ -299,18 +433,31 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     }
     const ids = new Set(chosen.filter(validForEdit).map(item => item.id))
     if (!ids.size) return
+    const stack = chosen.find(item => item.kind === 'stack')
+    if (stack) {
+      if (chosen.length > 1) { setFeedback('Select a single stack to choose how to delete it.'); return }
+      setStackToDelete(stack.id); show('deleteStack'); return
+    }
+    let objects = project.objects
+    for (const item of chosen) {
+      if (ids.has(item.id) && item.parentId && indexed.map.get(item.parentId)?.stack) {
+        try { objects = extractFromStack(objects, item.parentId, item.id) } catch (reason) { onError(reason); return }
+      }
+    }
     const formerParents = new Set(chosen.filter(item => ids.has(item.id)).map(item => item.parentId))
-    const remaining = project.objects.filter(item => !ids.has(item.id))
+    const remaining = objects.filter(item => !ids.has(item.id))
       .map(item => item.parentId && ids.has(item.parentId) ? { ...item, parentId: undefined } : item)
     const changes = new Map<string, CanvasObject>()
     for (const parentId of formerParents) if (parentId) refitFormerFrames(parentId, changes, remaining, ids)
-    edit(remaining.map(item => changes.get(item.id) ?? item), project.edges.filter(edge => !ids.has(edge.from) && !ids.has(edge.to)))
+    const retained = new Set(remaining.map(item => item.id))
+    edit(remaining.map(item => changes.get(item.id) ?? item), project.edges.filter(edge => retained.has(edge.from) && retained.has(edge.to)))
     setSelected([])
   }
 
   function duplicate() {
-    const copies = chosen.filter(validForEdit).filter(item => item.kind !== 'canvas' && item.kind !== 'frame' && item.kind !== 'group').map(item => ({
-      ...item, id: crypto.randomUUID(), x: item.x + 24, y: item.y + 24,
+    const copies = chosen.filter(validForEdit).filter(item => !['canvas', 'frame', 'group', 'stack'].includes(item.kind)).map(item => ({
+      ...item, id: crypto.randomUUID(), x: projected(item).x + 24, y: projected(item).y + 24,
+      parentId: item.parentId && indexed.map.get(item.parentId)?.stack ? indexed.map.get(item.parentId)?.parentId : item.parentId,
     }))
     if (!copies.length) return
     edit([...project.objects, ...copies])
@@ -319,7 +466,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
 
   function groupSelection() {
     const items = chosen.filter(validForEdit)
-    if (items.length < 2 || items.some(item => item.parentId !== items[0].parentId)) return
+    if (items.length < 2 || items.some(item => item.parentId !== items[0].parentId || item.parentId && indexed.map.get(item.parentId)?.stack)) return
     const bounds = items.map(item => rotatedBounds(item, item.rotation))
     const left = Math.min(...bounds.map(item => item.left))
     const top = Math.min(...bounds.map(item => item.top))
@@ -340,6 +487,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const frame = frameId ? indexed.map.get(frameId) : undefined
     if (!validForEdit(object) || frame?.id === object.parentId) return
     if (frameId && (!frame || frame.kind !== 'frame' || frame.collapsed || !validForEdit(frame) || expandSelection([object.id]).has(frameId))) return
+    if (object.parentId && indexed.map.get(object.parentId)?.stack) { setFeedback('Remove the card from its stack before changing its container.'); return }
     const placed = { ...object, parentId: frame?.id }
     const changes = new Map([[object.id, placed]])
     refitFormerFrames(object.parentId, changes)
@@ -424,9 +572,29 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     setTool('select')
   }
 
+  function startPileDrag(event: ReactPointerEvent<HTMLElement>, object: CanvasObject, extracting = false) {
+    event.stopPropagation()
+    if (event.button !== 0 || !validForEdit(object) || gesture.current) return
+    const ids = expandSelection([object.id])
+    if (!canTransform(ids)) return
+    const start = localPoint(event)
+    gesture.current = { kind: 'move', start, camera, pointerId: event.pointerId, preview: [], pickup: extracting ? projected(object) : undefined,
+      objects: project.objects.filter(item => ids.has(item.id)) }
+    setSelected([object.id])
+    setPopup(null)
+    setContextPoint(undefined)
+    event.preventDefault()
+    stage.current?.setPointerCapture(event.pointerId)
+  }
+
   function start(event: ReactPointerEvent<HTMLElement>, object?: CanvasObject, handle?: 'resize') {
     if (play || (event.button !== 0 && event.button !== 1) || isEditor(event.target) ||
       (event.target instanceof Element && event.target.closest('audio, video, a, [data-media-control]'))) return
+    if (object && !handle && tool === 'select' && !space.current && event.button === 0 &&
+      event.target instanceof Element && event.target.closest('[data-selectable-card-text]')) {
+      pick(object.id, event.shiftKey)
+      return
+    }
     const screen = localPoint(event)
     const world = screenToWorld(screen, camera)
     setPopup(null)
@@ -456,14 +624,16 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       }
       return
     } else if (object) {
-      const group = object.parentId ? indexed.map.get(object.parentId) : undefined
-      const target = !handle && !event.shiftKey && group?.kind === 'group' ? group : object
+      const canonical = indexed.map.get(object.id) ?? object
+      const group = canonical.parentId ? indexed.map.get(canonical.parentId) : undefined
+      const target = !handle && !event.shiftKey && group?.kind === 'group' ? group : canonical
       if (!handle && (event.shiftKey || !selected.includes(target.id))) pick(target.id, event.shiftKey)
       if ((!handle && event.shiftKey) || !validForEdit(target)) return
+      if (!handle && group?.kind === 'stack') return
       const active = expandSelection(selected.includes(target.id) ? selected : [target.id])
       if (!canTransform(active)) return
       gesture.current = handle ? { start: screen, camera, kind: handle, object: target, excluded: active, preview: [], pointerId: event.pointerId } : {
-        start: screen, camera, kind: 'move', pointerId: event.pointerId, objects: project.objects.filter(item =>
+        start: screen, camera, kind: 'move', pointerId: event.pointerId, preview: [], objects: project.objects.filter(item =>
           active.has(item.id) && !indexed.flags.get(item.id)?.locked),
       }
     } else {
@@ -480,7 +650,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   function startRotation(event: ReactPointerEvent<HTMLButtonElement>, object: CanvasObject) {
     if (event.button !== 0 || gesture.current || !validForEdit(object) || !canTransform(expandSelection([object.id]))) return
     const start = localPoint(event)
-    const center = worldToScreen(rectCenter(object), camera)
+    const center = worldToScreen(rectCenter(projected(object)), camera)
     event.stopPropagation()
     event.preventDefault()
     gesture.current = { kind: 'rotate', start, camera, pointerId: event.pointerId, object, center,
@@ -564,7 +734,19 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     if (active?.pointerId !== event.pointerId) return
     if (commit && active.kind === 'rotate') updateRotation(active, localPoint(event), event.altKey)
     if (commit && active.kind === 'resize') updateResize(active, localPoint(event), event.altKey, event.shiftKey)
+    if (commit && active.kind === 'move') active.drop = stackDropTarget(event.clientX, event.clientY, active)
     finish(commit)
+  }
+
+  function movingCardIds(active: Extract<Gesture, { kind: 'move' }>) {
+    if (active.pickup) return []
+    const ids = active.objects.map(item => item.id)
+    return ids.length && active.objects.every(canFlip) ? ids : []
+  }
+
+  function stackDropTarget(clientX: number, clientY: number, active: Extract<Gesture, { kind: 'move' }>) {
+    const stack = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-add-to-stack]')?.dataset.addToStack
+    return stack && active.preview.length && canAddToStack(project.objects, stack, movingCardIds(active)) ? stack : undefined
   }
 
   function move(event: ReactPointerEvent<HTMLDivElement>) {
@@ -597,6 +779,12 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     }
     if (active.kind === 'resize') updateResize(active, screen, event.altKey, event.shiftKey)
     if (active.kind === 'move' && active.objects.length && Math.hypot(dx, dy) > 2) {
+      if (active.pickup) {
+        const card = active.pickup
+        active.preview = [{ ...card, parentId: undefined, x: card.x + delta.x, y: card.y + delta.y }]
+        setDragged(active.preview)
+        return
+      }
       const source = active.objects.find(item => selected.includes(item.id)) ?? active.objects[0]
       const proposed = { x: source.x + delta.x, y: source.y + delta.y }
       let position = project.settings.snapGrid && !event.altKey ? snapPoint(proposed) : proposed
@@ -614,7 +802,10 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       }
       const at = worldToScreen(position, camera)
       setGuides(project.settings.guides ? { x: snapped.x ? at.x : undefined, y: snapped.y ? at.y : undefined } : undefined)
-      setDragged(active.objects.map(item => translateObject(item, position.x - source.x, position.y - source.y)))
+      active.preview = active.objects.map(item => translateObject(item, position.x - source.x, position.y - source.y))
+      active.drop = stackDropTarget(event.clientX, event.clientY, active)
+      setStackDrop(active.drop)
+      setDragged(active.preview)
     }
   }
 
@@ -634,12 +825,18 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       add('stroke', { x, y }, { x, y, width: Math.max(...xs) - x + 4, height: Math.max(...ys) - y + 4,
         colour: palette[6], points: active.points.map(point => ({ x: point.x - x, y: point.y - y })), strokeWidth: 3 })
     }
-    const changed = active?.kind === 'rotate' || active?.kind === 'resize' ? active.preview : dragged
+    const changed = active?.kind === 'rotate' || active?.kind === 'resize' || active?.kind === 'move' ? active.preview : dragged
     if (commit && changed.length) {
       const next = new Map(changed.map(object => [object.id, object]))
-      edit(project.objects.map(object => next.get(object.id) ?? object))
+      if (active?.kind === 'move' && active.pickup?.parentId) {
+        const pickup = active.pickup
+        stackAction(() => extractFromStack(project.objects, pickup.parentId!, pickup.id, changed[0]), pickup.id)
+      } else if (active?.kind === 'move' && active.drop) {
+        stackAction(() => addToStack(project.objects.map(object => next.get(object.id) ?? object), active.drop!, movingCardIds(active)), active.drop)
+      } else edit(project.objects.map(object => next.get(object.id) ?? object))
     }
     setDragged([])
+    setStackDrop(undefined)
     setMarquee(undefined)
     setGuides(undefined)
     setCameraDraft(undefined)
@@ -650,7 +847,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const element = stage.current
     if (!element) return
     function wheel(event: WheelEvent) {
-      if (play || isEditor(event.target)) return
+      if (play || isEditor(event.target) || event.target instanceof Element && event.target.closest('[data-card-scroll]')) return
       event.preventDefault()
       if (gesture.current?.kind === 'rotate' || gesture.current?.kind === 'resize') return
       const amount = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY
@@ -675,7 +872,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       if (pinch.current || gesture.current) { pinch.current = undefined; finish(false) }
     }
     function keydown(event: KeyboardEvent) {
-      if (event.defaultPrevented || isEditor(event.target) || modal || files || editing || document.querySelector('dialog[open]')) return
+      if (event.defaultPrevented || isEditor(event.target) || modal || files || editing || editingBack || document.querySelector('dialog[open]')) return
       const key = event.key.toLowerCase()
       if (play) {
         if (key === 'escape') { event.preventDefault(); setPlay(undefined) }
@@ -692,13 +889,13 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         return
       }
       if (key === ' ') { event.preventDefault(); space.current = true }
-      if (key === 'escape' && (gesture.current?.kind === 'rotate' || gesture.current?.kind === 'resize')) {
+      if (key === 'escape' && (gesture.current?.kind === 'rotate' || gesture.current?.kind === 'resize' || gesture.current?.kind === 'move')) {
         event.preventDefault()
         finish(false)
         return
       }
       if (key === 'escape' && rotateTarget) { event.preventDefault(); setRotateId(undefined); return }
-      if (key === 'escape') { setPopup(null); setContextPoint(undefined); setSelected([]); setFromId(''); setEdgeId(''); setTool('select') }
+      if (key === 'escape') { setPopup(null); setPileMenu(undefined); setContextPoint(undefined); setSelected([]); setFromId(''); setEdgeId(''); setTool('select') }
       if (canEdit && (key === 'delete' || key === 'backspace')) { event.preventDefault(); removeSelection() }
       if (canEdit && key.startsWith('arrow') && chosen.length) {
         event.preventDefault()
@@ -736,10 +933,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     if (!play && document.fullscreenElement?.classList.contains('ic-workspace')) void document.exitFullscreen().catch(() => {})
   }, [play])
 
-  async function addFiles(replace = '') {
+  async function addFiles(replace = '', side: CardSide = 'front') {
     if (!canEdit) return
     setPopup(null)
     setReplaceId(replace)
+    setReplaceSide(side)
     try {
       const chosenFiles = await pickCanvasFiles(!replace)
       if (chosenFiles === undefined) {
@@ -753,6 +951,15 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
 
   async function importAssets(assets: CanvasPreparedAsset[]) {
     if (!assets.length) return
+    if (replaceId && replaceSide === 'back') {
+      const object = indexed.map.get(replaceId)
+      if (!object || !validForEdit(object) || !canFlip(object) || assets.length !== 1) throw new Error('Choose one attachment for an editable card.')
+      const back = { ...cardFace(object, 'back'), assetId: assets[0].id }
+      const next = { ...project, objects: project.objects.map(item => item.id === replaceId ? { ...item, back } : item), updatedAt: Date.now() }
+      await write([next], assets)
+      record(next)
+      return
+    }
     const begin = screenToWorld(pointer.current.x ? pointer.current : { x: size.width * .47, y: size.height * .43 }, camera)
     const origin = placement === 'smart' ? placePoint(begin, placement) : begin
     const edited = replaceId ? project.objects.map(object => object.id === replaceId ? { ...object, assetId: assets[0].id } : object) : project.objects
@@ -789,7 +996,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   function openObject(object: CanvasObject) {
     if (object.kind === 'canvas' && object.targetId) openCanvas(object.targetId)
     else if (object.kind === 'page' && object.targetId) openPage(object.targetId)
-    else if ((object.kind === 'text' || object.kind === 'note') && validForEdit(object)) setEditing(object)
+    else if (validForEdit(object) && cardSide(object) === 'back') setEditingBack(object.id)
+    else if ((object.kind === 'text' || object.kind === 'note') && validForEdit(object)) setEditing(indexed.map.get(object.id) ?? object)
   }
 
   async function moveProject() {
@@ -814,15 +1022,33 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const saveModes = ['versions', 'checkpoint', 'recovery', 'copy'] as const
   const findProjects = (findScope === 'all' ? projects : findScope === 'children' ? [project, ...descendants(projects, project.id)] : [project])
     .filter(item => !ancestors(projects, item.id).some(ancestor => ancestor.trashedAt))
-  const matches = query.trim() ? findProjects.flatMap(canvas => canvas.objects.filter(object => (!findKind || object.kind === findKind) &&
-    (object.name + ' ' + object.text + ' ' + (object.caption ?? '')).toLowerCase().includes(query.trim().toLowerCase()))
-    .map(object => ({ canvas, object }))).slice(0, 100) : []
+  const matches = query.trim() ? findProjects.flatMap(canvas => searchCanvasObjects(canvas, query, findKind)
+    .map(match => ({ canvas, ...match }))).slice(0, 100) : []
+  const backBeingEdited = editingBack ? indexed.map.get(editingBack) : undefined
+  const pendingDelete = stackToDelete ? indexed.map.get(stackToDelete) : undefined
+  const selectedStack = chosen.length === 1 && chosen[0].kind === 'stack' ? chosen[0] : undefined
+  const stackingSelection = chosen.length > 1 && chosen.every(canFlip)
+  const stackable = stackingSelection && canStackCards(project.objects, selected)
+  const stackHint = stackable ? undefined : 'Select unlocked, loose cards in the same container'
+  const selectedMember = chosen.length === 1 && indexed.map.get(chosen[0].parentId ?? '')?.kind === 'stack'
+  const quickOffset = (rotateTarget ? 59 : 42) + (selectedMember ? 36 : 0)
+  const activeMove = gesture.current?.kind === 'move' ? gesture.current : undefined
+  const stackCandidates = activeMove && dragged.length ? movingCardIds(activeMove) : []
+  const pileUIs = [...displayedPiles.piles.values()].flatMap(pile => {
+    if (indexed.flags.get(pile.stack.id)?.hidden || !pile.frontId) return []
+    const card = displayedPiles.cards.get(pile.frontId)
+    if (!card) return []
+    const bounds = rotatedBounds(card, card.rotation)
+    const point = worldToScreen({ x: bounds.right, y: bounds.top }, camera)
+    if (point.x < -60 || point.x > size.width + 90 || point.y < -60 || point.y > size.height + 90) return []
+    return [{ pile, card, bounds, point }]
+  })
   const activeSettings = play ? stageProject.settings : settings
   const menuButtons = (items: ReturnType<typeof action>[]) => items.map(item => <button key={item.label} onClick={item.run}>{item.icon}{item.label}</button>)
   const tools = [{ id: 'select', name: 'Select', icon: MousePointer2 }, { id: 'hand', name: 'Hand', icon: Hand },
     { id: 'text', name: 'Text', icon: Type }, { id: 'note', name: 'Sticky note', icon: StickyNote }, { id: 'stroke', name: 'Draw', icon: PenLine }] as const
   const currentColour = chosen.length === 1 && chosen[0].mode === 'card' ? chosen[0].colour : undefined
-  const showQuick = canEdit && !!quick && !play && !dragged.length && !marquee && chosen.some(item => renderedIds.has(item.id) || item.kind === 'group')
+  const showQuick = canEdit && !selectedStack && !!quick && !play && !dragged.length && !marquee && chosen.some(item => renderedIds.has(item.id) || item.kind === 'group')
 
   return <section className="ic-workspace" data-presentation={!!play}>
     {!play && <header className="ic-header">
@@ -881,21 +1107,34 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         if (play || !canEdit) return
         pointer.current = localPoint(event)
         setReplaceId('')
+        setReplaceSide('front')
         void droppedCanvasFiles(event.dataTransfer).then(items => { if (items.length) setFiles(items) }).catch(onError)
       }}>
       <div className={'ic-world' + (play?.smooth && origin.x === 0 && origin.y === 0 ? ' ic-smooth' : '')} style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${camera.zoom})` }}>
+        {pileUIs.flatMap(({ pile }) => [...pile.rear].reverse().map(({ memberId, rect, colour }) => {
+          const member = indexed.map.get(memberId)
+          if (play || !member) return <div key={memberId} className="ic-stack-rear" aria-hidden="true" style={{ left: rect.x - origin.x, top: rect.y - origin.y,
+            width: rect.width, height: rect.height, transform: `rotate(${rect.rotation}deg)`, '--ic-rear-colour': colour } as CSSProperties} />
+          return <button key={memberId} type="button" className="ic-stack-rear" title={'Bring forward · ' + member.name}
+            aria-label={'Bring forward ' + member.name} style={{ left: rect.x - origin.x, top: rect.y - origin.y,
+              width: rect.width, height: rect.height, transform: `rotate(${rect.rotation}deg)`, '--ic-rear-colour': colour } as CSSProperties}
+            onPointerDown={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={() => revealCard(member)} />
+        }))}
         {rendered.map(object => {
           const target = object.targetId ? projects.find(candidate => candidate.id === object.targetId &&
             !ancestors(projects, candidate.id).some(ancestor => ancestor.trashedAt)) : undefined
           const picked = !play && selected.includes(object.id)
           const locked = indexed.flags.get(object.id)?.locked
           const card = object.mode === 'card'
+          const isBack = cardSide(object) === 'back'
+          const isMember = !!object.parentId && !!indexed.map.get(object.parentId)?.stack
           const atThumbnailScale = Math.max(object.width, object.height) * camera.zoom < 18 && !picked
           return <div key={object.id} className="ic-item" data-kind={object.kind} data-mode={object.mode} data-selected={picked}
+            data-card-side={canFlip(object) ? cardSide(object) : undefined} data-stack-member={isMember || undefined}
             data-collapsed={!!object.collapsed} data-border={!!object.border} data-from={fromId === object.id}
             style={{ left: object.x - origin.x, top: object.y - origin.y, width: object.width, height: object.collapsed ? 36 : object.height,
               transform: `rotate(${object.rotation}deg)`, opacity: object.opacity, '--ic-item-colour': object.colour,
-              '--ic-item-ink': card ? readableInk(object.colour) : undefined } as CSSProperties}
+              '--ic-item-ink': card || isBack || isMember ? readableInk(object.colour) : undefined } as CSSProperties}
             onPointerDown={event => { event.stopPropagation(); start(event, object) }}
             onDoubleClick={event => { event.stopPropagation(); if (!play) openObject(object) }}
             tabIndex={!play ? 0 : undefined}
@@ -907,14 +1146,20 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
                 openObject(object)
               }
             }}
-            onContextMenu={event => { if (!play && canEdit) { event.preventDefault(); pick(object.id); setContextPoint(localPoint(event)) } }}
+            onContextMenu={event => { if (!play && canEdit) {
+              event.preventDefault()
+              if (!selected.includes(object.id)) pick(object.id)
+              setContextPoint(localPoint(event))
+            } }}
             data-testid={'canvas-object-' + object.id} aria-label={object.name}>
             {atThumbnailScale ? <div className="ic-item-swatch" /> : object.kind === 'frame' ? <span className="ic-frame-label"><Box size={14} /> {object.name}{object.collapsed && <small>{project.objects.filter(item => item.parentId === object.id).length} items</small>}</span> : <>
-              {card && !['canvas', 'page', 'file', 'note'].includes(object.kind) && <span className="ic-object-title">{object.name}</span>}
-              <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit} replace={() => void addFiles(object.id)} />
-              {card && object.caption && <small className="ic-caption">{object.caption}</small>}
+              {!isBack && card && !['canvas', 'page', 'file', 'note'].includes(object.kind) && <span className="ic-object-title">{object.name}</span>}
+              <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit && !locked}
+                replace={() => void addFiles(object.id)} replaceBack={() => void addFiles(object.id, 'back')} />
+              {!isBack && card && object.caption && <small className="ic-caption">{object.caption}</small>}
             </>}
-            {canEdit && picked && !locked && !rotateTarget &&
+            {!play && !atThumbnailScale && canFlip(object) && <CardFlipControl object={object} flipCard={flipCard} />}
+            {canEdit && picked && !locked && !rotateTarget && !isMember &&
               <button className="ic-handle ic-resize" tabIndex={-1} aria-label={'Resize ' + object.name}
                 onPointerDown={event => { event.stopPropagation(); start(event, object, 'resize') }} />}
           </div>
@@ -931,11 +1176,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           {stageProject.edges.map(edge => {
             const from = dragMap.get(edge.from) ?? indexed.map.get(edge.from)
             const to = dragMap.get(edge.to) ?? indexed.map.get(edge.to)
-            if (!activeSettings.showEdges[edge.kind] || !from || !to || indexed.flags.get(from.id)?.hidden || indexed.flags.get(to.id)?.hidden ||
-              !intersects({ x: Math.min(from.x, to.x), y: Math.min(from.y, to.y), width: Math.max(from.x + from.width, to.x + to.width) - Math.min(from.x, to.x),
-                height: Math.max(from.y + from.height, to.y + to.height) - Math.min(from.y, to.y) },
-              { ...topLeft, width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y })) return null
-            const raw = connectionEndpoints(from, to)
+            if (!activeSettings.showEdges[edge.kind] || !from || !to || indexed.flags.get(from.id)?.hidden || indexed.flags.get(to.id)?.hidden) return null
+            const raw = connectionEndpoints(displayedPiles.proxies.get(from.id) ?? from, displayedPiles.proxies.get(to.id) ?? to)
+            if (!intersects({ x: Math.min(raw.from.x, raw.to.x), y: Math.min(raw.from.y, raw.to.y),
+              width: Math.abs(raw.from.x - raw.to.x), height: Math.abs(raw.from.y - raw.to.y) },
+            { ...topLeft, width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y })) return null
             const ends = { from: { x: raw.from.x - origin.x, y: raw.from.y - origin.y }, to: { x: raw.to.x - origin.x, y: raw.to.y - origin.y } }
             return <g key={edge.id} data-edge-kind={edge.kind} onPointerDown={event => {
               if (!play) { event.stopPropagation(); setEdgeId(edge.id); setSelected([]) }
@@ -949,6 +1194,47 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           {drawing.length > 1 && <polyline points={drawing.map(point => `${point.x - origin.x},${point.y - origin.y}`).join(' ')} fill="none" stroke={palette[6]} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
         </svg>
       </div>
+      {!play && pileUIs.map(({ pile, card, bounds, point }) => {
+        const fanned = pile.stack.stack?.layout === 'fan'
+        const x = Math.min(size.width - 58, Math.max(58, point.x - 45))
+        const y = Math.min(size.height - 38, Math.max(64, point.y - 15))
+        const addable = stackCandidates.length > 0 && canAddToStack(project.objects, pile.stack.id, stackCandidates)
+        const accessiblePosition = { left: x, top: y }
+        return <div key={pile.stack.id} className="ic-pile-tools" data-stack-id={pile.stack.id}>
+          {selectedStack?.id === pile.stack.id && <div className="ic-stack-selected" aria-hidden="true" style={{
+            left: worldToScreen({ x: bounds.left, y: bounds.top }, camera).x - 4, top: point.y - 4,
+            width: (bounds.right - bounds.left) * camera.zoom + 8, height: (bounds.bottom - bounds.top) * camera.zoom + 8 }} />}
+          {addable && <div className="ic-stack-drop" data-add-to-stack={pile.stack.id} data-active={stackDrop === pile.stack.id}
+            style={{ ...accessiblePosition, transform: 'translate(-50%, -50%)' }}>Add to Stack</div>}
+          {!dragged.length && <div className="ic-stack-controls" data-anchor="center" style={accessiblePosition}
+            onPointerDown={event => event.stopPropagation()} onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation() }}>
+            {canEdit && <button type="button" className="ic-icon ic-stack-handle" title="Drag to move stack" aria-label={'Move stack ' + pile.stack.name}
+              disabled={!validForEdit(pile.stack)} onPointerDown={event => startPileDrag(event, pile.stack)}
+              onClick={() => pick(pile.stack.id)}><GripHorizontal /></button>}
+            <button type="button" className="ic-stack-count" aria-expanded={pileMenu === pile.stack.id} aria-label={`Browse ${pile.order.length} ${pile.order.length === 1 ? 'card' : 'cards'} in ${pile.stack.name}`}
+              onClick={() => { setPileMenu(current => current === pile.stack.id ? undefined : pile.stack.id); pick(pile.stack.id) }}>
+              {pile.order.length} {pile.order.length === 1 ? 'card' : 'cards'}</button>
+            {canEdit && <button type="button" className="ic-icon ic-stack-extract" title="Drag to pull out the front card" aria-label={'Extract ' + card.name}
+              disabled={!validForEdit(card)} onPointerDown={event => startPileDrag(event, card, true)}
+              onClick={event => { if (event.detail === 0) removeFromStack(card); else revealCard(card) }}><ArrowDownToLine /></button>}
+          </div>}
+          {pileMenu === pile.stack.id && !dragged.length && <div className="ic-stack-member-popover" data-card-scroll=""
+            aria-label={pile.stack.name + ' members'} style={{ left: Math.max(6, Math.min(size.width - 224, x - 70)), top: Math.min(size.height - 250, y + 18) }}
+            onPointerDown={event => event.stopPropagation()} onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation() }}>
+            {pile.order.map(id => {
+              const member = indexed.map.get(id)
+              return member && <button type="button" key={id} aria-current={id === pile.frontId}
+                disabled={!!indexed.flags.get(id)?.hidden} onClick={() => { revealCard(member); setPileMenu(undefined) }}>{member.name}</button>
+            })}
+            <button type="button" disabled={!!indexed.flags.get(pile.stack.id)?.locked}
+              onClick={() => { changeStackLayout(pile.stack, !fanned); setPileMenu(undefined) }}>{fanned ? 'Restack' : 'Fan Out'}</button>
+            {canEdit && <>
+              <button type="button" disabled={!validForEdit(pile.stack)} onClick={() => { stackAction(() => unstackAll(project.objects, pile.stack.id), card.id); setPileMenu(undefined) }}>Unstack All</button>
+              <button type="button" disabled={!validForEdit(pile.stack)} onClick={() => { setStackToDelete(pile.stack.id); show('deleteStack'); setPileMenu(undefined) }}>Delete stack…</button>
+            </>}
+          </div>}
+        </div>
+      })}
       {rotateTarget && rotationPosition && <div className="ic-rotation-outline"
         style={{ left: rotationPosition.x, top: rotationPosition.y, width: rotateTarget.width * camera.zoom,
           height: rotateTarget.height * camera.zoom, transform: `translate(-50%, -50%) rotate(${rotateTarget.rotation}deg)` }}>
@@ -1033,7 +1319,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           </div>
         </div>}
         {showQuick && quick && <div className="ic-quick" role="toolbar" aria-label="Selection actions" onPointerDown={event => event.stopPropagation()}
-          style={{ left: Math.max(8, Math.min(size.width - (rotateTarget ? 255 : 225), quick.x)), top: Math.max(58, quick.y - (rotateTarget ? 59 : 42)) }}>
+          style={{ left: Math.max(8, Math.min(size.width - (rotateTarget ? 255 : 225), quick.x)),
+            top: selectedMember && quick.y - quickOffset < 58 ? Math.max(94, quick.y + 14) : Math.max(58, quick.y - quickOffset) }}>
           {chosen.length === 1 && <>
             {['canvas', 'page'].includes(chosen[0].kind) && <button className="ic-icon" aria-label="Quick Preview" title="Quick Preview" onClick={() => previewObject(chosen[0])}><Eye /></button>}
             {chosen[0].kind === 'group' ? <button className="ic-icon" aria-label="Ungroup" title="Ungroup" onClick={() => ungroup(chosen[0])}><Unlink /></button> :
@@ -1057,6 +1344,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
               {selectionLocked ? <Lock /> : <LockOpen />}
             </button>
           </>}
+          {stackingSelection && <button className="ic-button" disabled={!stackable} title={stackHint} onClick={stackSelection}>Stack Cards</button>}
           {chosen.length > 1 && <button className="ic-icon" aria-label="Group selection" title="Group selection" onClick={groupSelection}><Layers /></button>}
           <button className="ic-icon" aria-label="Duplicate" title="Duplicate" onClick={duplicate}><Copy /></button>
           <button className="ic-icon" aria-label="Delete selected" title="Delete selected" onClick={removeSelection}><Trash2 /></button>
@@ -1067,14 +1355,18 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
             </select>
           </label>}
         </div>}
-        {contextPoint && chosen.length === 1 && <div className="ic-menu ic-context-menu" onPointerDown={event => event.stopPropagation()}
+        {contextPoint && (chosen.length === 1 || stackingSelection) && <div className="ic-menu ic-context-menu" onPointerDown={event => event.stopPropagation()}
           style={{ left: Math.max(2, Math.min(size.width - 180, contextPoint.x)), top: Math.max(2, Math.min(size.height - 106, contextPoint.y)) }}>
+          {stackingSelection ? <button disabled={!stackable} title={stackHint} onClick={stackSelection}>Stack Cards</button> : <>
+          {canFlip(chosen[0]) && <button onClick={() => { flipCard(chosen[0]); setContextPoint(undefined) }}>Show {cardSide(chosen[0]) === 'back' ? 'Front' : 'Back'}</button>}
+          {chosen[0].parentId && indexed.map.get(chosen[0].parentId)?.stack && <button onClick={() => { removeFromStack(chosen[0]); setContextPoint(undefined) }}>Remove from Stack</button>}
           <button disabled={!validForEdit(chosen[0])} onClick={() => {
             changeObject(chosen[0], { mode: chosen[0].mode === 'card' ? 'direct' : 'card' })
             setContextPoint(undefined)
           }}>{chosen[0].mode === 'card' ? 'Remove Card' : 'Convert to Card'}</button>
           <button disabled={!validForEdit(chosen[0])} onClick={() => { reorder(chosen[0].id, 'front'); setContextPoint(undefined) }}>Bring to front</button>
           <button disabled={!validForEdit(chosen[0])} onClick={() => { reorder(chosen[0].id, 'back'); setContextPoint(undefined) }}>Send to back</button>
+          </>}
         </div>}
         {settings.minimap && <Minimap objects={indexed.visible} camera={camera} size={size} onCamera={setCamera} />}
         <div className="ic-zoom" onPointerDown={event => event.stopPropagation()}>
@@ -1089,8 +1381,17 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           <button className="ic-icon" aria-label="Fit All" title="Fit All" onClick={() => fit()}><Maximize /></button>
         </div>
         {panelOpen && <div className="ic-inspector-shell" onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge}
-          select={id => pick(id)} update={changeObject} updateEdge={(edge, patch) => edit(project.objects, project.edges.map(item => item.id === edge.id ? { ...item, ...patch } : item))}
-          reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} settings={updateSettings} /></div>}
+          select={id => {
+            const object = indexed.map.get(id)
+            if (object && object.parentId && indexed.map.get(object.parentId)?.stack) revealCard(object)
+            else pick(id)
+          }} update={changeObject} updateEdge={(edge, patch) => edit(project.objects, project.edges.map(item => item.id === edge.id ? { ...item, ...patch } : item))}
+          reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} settings={updateSettings} flipCard={flipCard}
+          editBack={object => { if (validForEdit(object)) setEditingBack(object.id) }} attachBack={object => void addFiles(object.id, 'back')}
+          removeBackAttachment={object => changeObject(object, { back: { ...cardFace(object, 'back'), assetId: undefined } })}
+          selectStackMember={(_, member) => revealCard(member)} removeFromStack={removeFromStack} setStackFanned={changeStackLayout}
+          unstack={object => stackAction(() => unstackAll(project.objects, object.id), object.stack?.order[0])}
+          deleteStack={object => { setStackToDelete(object.id); show('deleteStack') }} /></div>}
         {(feedback || error) && <div className="ic-toast" role="status" onPointerDown={event => event.stopPropagation()}>{feedback || error}
           {error && canEdit && <><button onClick={() => void flush().catch(onError)}>Retry</button><button onClick={() => show('export')}>Export current draft</button></>}<button className="ic-icon" aria-label="Dismiss message" onClick={() => setFeedback('')}><X /></button></div>}
       </>}
@@ -1102,7 +1403,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         <button className="ic-icon" aria-label="Exit presentation" onClick={() => setPlay(undefined)}><X /></button>
       </div>}
     </div>
-    {canEdit && files && <ImportDialog files={files} relink={!!replaceId} close={() => { setFiles(undefined); setReplaceId('') }} onImport={importAssets} />}
+    {canEdit && files && <ImportDialog files={files} relink={!!replaceId && (replaceSide === 'front' || !!indexed.map.get(replaceId)?.back?.assetId)}
+      close={() => { setFiles(undefined); setReplaceId(''); setReplaceSide('front') }} onImport={importAssets} />}
     {modal === 'details' && <ProjectDetails project={project} close={() => setModal(null)} onSave={async (next, assets) => {
       await write([next], assets); setModal(null)
     }} />}
@@ -1132,6 +1434,19 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           }}>Move to Trash</button></div>
       </div>
     </CanvasDialog>}
+    {modal === 'deleteStack' && pendingDelete?.stack && <CanvasDialog title="Delete card stack" close={() => setModal(null)}>
+      <div className="ic-form"><p>{pendingDelete.name} contains {pendingDelete.stack.order.length} {pendingDelete.stack.order.length === 1 ? 'card' : 'cards'}.</p>
+        <div className="ic-dialog-actions"><button className="ic-button" onClick={() => setModal(null)}>Cancel</button>
+          <button className="ic-button" onClick={() => { stackAction(() => unstackAll(project.objects, pendingDelete.id), pendingDelete.stack?.order[0]); setModal(null) }}>Unstack and keep cards</button>
+          <button className="ic-button" onClick={() => {
+            const ids = expandSelection([pendingDelete.id])
+            if (!canTransform(ids)) { setModal(null); return }
+            edit(project.objects.filter(item => !ids.has(item.id)), project.edges.filter(edge => !ids.has(edge.from) && !ids.has(edge.to)))
+            setSelected([]); setModal(null)
+          }}>Delete stack and its cards</button>
+        </div>
+      </div>
+    </CanvasDialog>}
     {saveModes.some(mode => mode === modal) && <CanvasSaveDialogs mode={modal as typeof saveModes[number]} project={project} projects={projects}
       close={() => setModal(null)} flush={() => flush()} write={write} refresh={async () => { await refresh(); resetHistory(); setSelected([]) }}
       onOpen={id => { setModal(null); openCanvas(id) }} />}
@@ -1141,9 +1456,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           <option value="canvas">This Canvas</option><option value="children">Include SubCanvases</option><option value="all">All Croft</option></select></label>
           <label>Object type<select value={findKind} onChange={event => setFindKind(event.target.value)}><option value="">All types</option>
             {Object.entries(kinds).map(([key, value]) => <option key={key} value={key}>{value}</option>)}</select></label></div>
-        <div className="ic-result-list">{matches.map(({ canvas, object }) => <button key={canvas.id + object.id} onClick={() => {
-          setModal(null); if (canvas.id === project.id) jumpTo(object.id); else openCanvas(canvas.id, object.id)
-        }}><strong>{object.name}</strong><small>{canvas.name} · {kinds[object.kind]}</small><span>{object.text}</span></button>)}
+        <div className="ic-result-list">{matches.map(({ canvas, object, side, title, location, description }) => <button key={canvas.id + object.id + (side ?? '')} onClick={() => {
+          setModal(null); if (canvas.id === project.id) jumpTo(object.id, side); else openCanvas(canvas.id, object.id, side)
+        }}><strong>{title}</strong><small>{location} · {kinds[object.kind]}</small><span>{description}</span></button>)}
           {query && !matches.length && <p>No matching canvas objects.</p>}</div>
       </div>
     </CanvasDialog>}
@@ -1217,6 +1532,10 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           <button className="ic-button ic-primary">Apply</button></div>
       </form>
     </CanvasDialog>}
+    {backBeingEdited && <CardBackEditor object={backBeingEdited} close={() => setEditingBack(undefined)} save={patch => {
+      changeObject(backBeingEdited, { back: { ...cardFace(backBeingEdited, 'back'), ...patch } })
+      setEditingBack(undefined)
+    }} />}
   </section>
 }
 

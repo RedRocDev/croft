@@ -70,7 +70,12 @@ try {
             object('frame-inner', 'Inner frame', 'frame', 150, 190, 260, 190, 'frame-outer'),
             object('group-nested', 'Nested group', 'group', 190, 236, 160, 72, 'frame-inner'),
             object('shape-first', 'First shape', 'rectangle', 200, 245, 58, 50, 'group-nested'),
-            object('shape-second', 'Second shape', 'ellipse', 282, 248, 52, 44, 'group-nested')]
+            object('shape-second', 'Second shape', 'ellipse', 282, 248, 52, 44, 'group-nested'),
+            { ...object('stack-nested', 'Nested pile', 'stack', 195, 258, 65, 51, 'group-nested'),
+              stack: { layout: 'compact', order: ['note-front', 'note-rear'] } },
+            { ...object('note-front', 'First card', 'note', 195, 258, 65, 51, 'stack-nested'),
+              visibleSide: 'back', back: { text: 'Reverse side in nested pile' } },
+            object('note-rear', 'Second card', 'note', 262, 259, 63, 50, 'stack-nested')]
           row.edges = [{ id: 'fixture-edge', kind: 'relationship', from: 'shape-first', to: 'shape-second', label: 'Sibling' }]
           row.camera = { x: 14, y: 17, zoom: 1 }
           store.put(row)
@@ -94,13 +99,14 @@ try {
   await metrics('Width').press('Enter')
   await commit()
   const rotated = await persisted()
-  const [root, inner, group, first, second] = rotated.project.objects
+  const [root, ...nested] = rotated.project.objects
   assert.equal(root.rotation, 90)
   assert.equal(root.height, 525)
   const closeTo = (actual, desired) => assert.ok(Math.abs(actual - desired) < 1e-7, `${actual} != ${desired}`)
   const originals = [{ x: 150, y: 190, w: 260, h: 190 }, { x: 190, y: 236, w: 160, h: 72 },
-    { x: 200, y: 245, w: 58, h: 50 }, { x: 282, y: 248, w: 52, h: 44 }]
-  for (const [index, item] of [inner, group, first, second].entries()) {
+    { x: 200, y: 245, w: 58, h: 50 }, { x: 282, y: 248, w: 52, h: 44 }, { x: 195, y: 258, w: 65, h: 51 },
+    { x: 195, y: 258, w: 65, h: 51 }, { x: 262, y: 259, w: 63, h: 50 }]
+  for (const [index, item] of nested.entries()) {
     const original = originals[index]
     closeTo(item.width, original.w * 1.5)
     closeTo(item.x + item.width / 2, 460 - (original.y + original.h / 2 - 295) * 1.5)
@@ -108,6 +114,12 @@ try {
     assert.equal(item.rotation, 90)
   }
   assert.equal(rotated.project.edges[0].to, 'shape-second')
+  const [stack, front, rear] = nested.slice(4)
+  assert.equal(stack.parentId, 'group-nested')
+  assert.deepEqual(stack.stack.order, [front.id, rear.id])
+  assert.equal(front.parentId, stack.id)
+  assert.equal(rear.parentId, stack.id)
+  assert.equal(front.back.text, 'Reverse side in nested pile')
   assert.deepEqual(Buffer.from(rotated.bytes), Buffer.from(image, 'base64'))
 
   await button('Undo').click()
@@ -117,8 +129,16 @@ try {
   assert.deepEqual(reverted.project.objects.slice(1).map(({ x, y, width: w, height: h }) => ({ x, y, w, h })), originals)
   await page.reload()
   await crumb.locator('img').waitFor()
+  await button('Browse 2 cards in Nested pile').waitFor()
+  await outer.click({ position: { x: 14, y: 15 } })
+  await pane.getByRole('checkbox', { name: 'Collapse frame' }).check()
+  await button('Browse 2 cards in Nested pile').waitFor({ state: 'hidden' })
+  await pane.getByRole('checkbox', { name: 'Collapse frame' }).uncheck()
+  await button('Browse 2 cards in Nested pile').waitFor()
+  await button('Lock object', pane).click()
+  assert.equal(await button('Move stack Nested pile').isDisabled(), true)
   await button('Home', page.getByRole('navigation', { name: 'Canvas breadcrumbs' })).click()
   await page.getByRole('region', { name: 'Canvas projects' }).getByRole('button', { name: /Container verification Synthetic/ }).locator('img').waitFor()
   assert.deepEqual(errors, [])
-  console.log('Chrome passed custom raster icon creation, exact IndexedDB bytes and reload, nested frame/group transforms, edge identity and atomic undo.')
+  console.log('Chrome passed custom raster icon bytes and reload, nested frame/group/stack transforms, edge identity, atomic undo, inherited visibility and locking.')
 } finally { await browser.close() }

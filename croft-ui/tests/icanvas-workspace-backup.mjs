@@ -39,19 +39,24 @@ try {
     const current = { id: 'synthetic-large-file', name: 'trail-kit.bin', mime: blob.type, size: blob.size, blob }
     const link = { id: 'synthetic-link', name: 'original-link.txt', mime: 'text/plain', size: 7, linked: true }
     const previous = { id: 'synthetic-history-file', name: 'backup-history.txt', mime: 'text/plain', size: 13, blob: new Blob(['draft history'], { type: 'text/plain' }) }
+    const reverse = { id: 'synthetic-back-file', name: 'reverse.txt', mime: 'text/plain', size: 14, blob: new Blob(['back-only data'], { type: 'text/plain' }) }
     const board = createProject('Backup Expedition')
     const child = createProject('Backup Camps', board.id)
     const unopened = createProject('Backup Archived Plans')
     unopened.trashedAt = Date.now()
-    const departure = makeObject('note', { x: 10, y: 20 }, { text: 'Departure' })
+    const stack = makeObject('stack', { x: 10, y: 20 }, { name: 'Expedition stack' })
+    const departure = makeObject('note', { x: 10, y: 20 }, { text: 'Departure', parentId: stack.id, visibleSide: 'back', back: { title: 'Route notes', text: 'Choose the trail.' } })
     const arrival = makeObject('canvas', { x: 350, y: 50 }, { name: child.name, targetId: child.id })
-    const media = makeObject('file', { x: 0, y: 200 }, { name: current.name, assetId: current.id })
+    const media = makeObject('file', { x: 0, y: 200 }, { name: current.name, assetId: current.id, parentId: stack.id,
+      visibleSide: 'back', back: { title: 'File context', text: 'Open later.', assetId: reverse.id } })
+    stack.stack = { order: [departure.id, media.id], layout: 'compact' }
     child.objects = [makeObject('file', { x: 0, y: 0 }, { name: link.name, assetId: link.id })]
-    board.objects = [departure, arrival, media]
+    board.objects = [departure, arrival, media, stack]
     board.stops = [{ id: 'synthetic-stop', name: 'Stop', canvasId: child.id, camera: child.camera, duration: 5 }]
     board.edges = [{ id: 'synthetic-edge', kind: 'relationship', from: departure.id, to: arrival.id, label: 'Night 1' }]
-    const older = { ...board, objects: [departure, arrival, { ...media, assetId: previous.id }] }
-    await store.saveProjects([board, child, unopened], [current, link, previous])
+    const older = { ...board, objects: [departure, arrival, { ...media, back: { ...media.back, assetId: previous.id } },
+      { ...stack, stack: { order: [media.id, departure.id], layout: 'fan' } }] }
+    await store.saveProjects([board, child, unopened], [current, link, previous, reverse])
     await store.saveVersion(older, 'Checkpoint with earlier attachment', [older, child])
     await store.saveRecovery({ ...older, name: 'Backup Expedition recovery test', updatedAt: board.updatedAt + 1 })
     await store.saveProjects([{ ...board, updatedAt: board.updatedAt + 2 }])
@@ -159,7 +164,8 @@ try {
     const link = state.assets.find(asset => asset.id === child.objects[0].assetId)
     const version = state.versions.find(entry => entry.projectId === parent.id)
     const recovery = state.recoveries.find(entry => entry.projectId === parent.id)
-    const historyAsset = state.assets.find(asset => asset.id === version.project.objects[2].assetId)
+    const historyAsset = state.assets.find(asset => asset.id === version.project.objects[2].back.assetId)
+    const reverseAsset = state.assets.find(asset => asset.id === parent.objects[2].back.assetId)
     return {
       ids: [parent.id, child.id, old.id],
       hierarchy: child.parentId === parent.id && parent.objects[1].targetId === child.id && parent.stops[0].canvasId === child.id,
@@ -167,17 +173,21 @@ try {
       trash: Boolean(old.trashedAt), media: attachment.blob.size, bytes: await attachment.blob.slice(-20).text(),
       link: link.linked && !link.blob && !link.handle, oldAttachment: await historyAsset.blob.text(),
       history: version.number === 1 && version.project.objects[2].id === parent.objects[2].id && version.descendants[0].id === child.id,
-      recovery: recovery.project.objects[2].assetId === historyAsset.id,
+      recovery: recovery.project.objects[2].back.assetId === historyAsset.id,
+      stack: parent.objects[3].stack.layout === 'compact' && parent.objects[3].stack.order.join(',') === [parent.objects[0].id, parent.objects[2].id].join(',') &&
+        parent.objects[2].parentId === parent.objects[3].id && version.project.objects[3].stack.layout === 'fan' &&
+        version.project.objects[3].stack.order.join(',') === [parent.objects[2].id, parent.objects[0].id].join(','),
+      faces: parent.objects[2].visibleSide === 'back' && parent.objects[2].back.title === 'File context' && await reverseAsset.blob.text() === 'back-only data',
       starterCount: state.projects.filter(project => project.name === 'Holiday Ideas').length,
     }
   })
   assert.deepEqual(sourceIds.filter(id => result.ids.includes(id)), [])
   assert.deepEqual({ ...result, ids: undefined }, {
     ids: undefined, hierarchy: true, edges: true, trash: true, media: 44 * MiB, bytes: '7'.repeat(20),
-    link: true, oldAttachment: 'draft history', history: true, recovery: true, starterCount: 2,
+    link: true, oldAttachment: 'draft history', history: true, recovery: true, stack: true, faces: true, starterCount: 2,
   })
   assert.deepEqual(errors, [])
-  console.log('iCanvas workspace backup QA passed: real Chrome writable stream, fresh profile merge, 44 MiB media, lineage, edges, links, Trash, versions and recovery.')
+  console.log('iCanvas workspace backup QA passed: real Chrome writable stream, fresh profile merge, 44 MiB media, face assets, visible sides, stack order, lineage, edges, links, Trash, versions and recovery.')
 } finally {
   await browser.close()
   const target = path.resolve(workspace)

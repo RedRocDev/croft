@@ -2,7 +2,10 @@ import type { OrientedRect } from './geometry'
 
 export type Point = { x: number; y: number }
 export type Camera = Point & { zoom: number }
-export type ObjectKind = 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'image' | 'audio' | 'video' | 'file' | 'canvas' | 'frame' | 'group' | 'page'
+export type ObjectKind = 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'image' | 'audio' | 'video' | 'file' | 'canvas' | 'frame' | 'group' | 'stack' | 'page'
+export type CardSide = 'front' | 'back'
+export type CardFace = { title: string; text: string; assetId?: string }
+export type StackLayout = 'compact' | 'fan'
 export type EdgeKind = 'direction' | 'connection' | 'relationship'
 export type Grid = 'dots' | 'lines' | 'none'
 export type CanvasObject = Point & {
@@ -12,6 +15,8 @@ export type CanvasObject = Point & {
   collapsed?: boolean; caption?: string; border?: boolean; referenceOnly?: boolean
   /** Frame bounds before automatic growth, in the same world coordinates as the frame. */
   frameBase?: OrientedRect
+  back?: CardFace; visibleSide?: CardSide
+  stack?: { order: string[]; layout: StackLayout }
 }
 export type CanvasEdge = { id: string; kind: EdgeKind; from: string; to: string; label: string }
 export type PresentationStop = { id: string; name: string; canvasId: string; camera: Camera; duration: number }
@@ -34,9 +39,49 @@ export const projectIcons = ['◈', '✦', '⌂', '✿', '◎', '▦']
 export const kinds: Record<ObjectKind, string> = {
   text: 'Text', note: 'Sticky note', rectangle: 'Rectangle', ellipse: 'Ellipse', stroke: 'Drawing',
   image: 'Image', audio: 'Audio', video: 'Video', file: 'File', canvas: 'SubCanvas',
-  frame: 'Frame', group: 'Group', page: 'Croft page',
+  frame: 'Frame', group: 'Group', stack: 'Card stack', page: 'Croft page',
 }
 export const edgeLabels: Record<EdgeKind, string> = { direction: 'Directions', connection: 'Connections', relationship: 'Relationships' }
+
+export function canFlip(object: CanvasObject) {
+  return object.kind === 'note' || (object.mode === 'card' && !['frame', 'group', 'stack'].includes(object.kind))
+}
+
+export function cardSide(object: CanvasObject): CardSide {
+  return canFlip(object) && object.visibleSide === 'back' ? 'back' : 'front'
+}
+
+export function cardFace(object: CanvasObject, side = cardSide(object)): CardFace {
+  return side === 'back' ? object.back ?? { title: '', text: '' } : { title: object.name, text: object.text, assetId: object.assetId }
+}
+
+export function objectAssetIds(object: CanvasObject) {
+  return [object.assetId, object.back?.assetId].filter((id): id is string => !!id)
+}
+
+export type CardSearchResult = { object: CanvasObject; side?: CardSide; title: string; location: string; description: string }
+
+export function searchCanvasObjects(project: CanvasProject, query: string, kind?: string): CardSearchResult[] {
+  const term = query.trim().toLowerCase()
+  if (!term) return []
+  const byId = new Map(project.objects.map(object => [object.id, object]))
+  const results: CardSearchResult[] = []
+  for (const object of project.objects) {
+    if (kind && kind !== object.kind) continue
+    const parent = object.parentId ? byId.get(object.parentId) : undefined
+    const location = parent?.kind === 'stack' ? `${project.name} / ${parent.name}` : project.name
+    const matches = (...entries: (string | undefined)[]) => entries.join(' ').toLowerCase().includes(term)
+    if (matches(object.name, object.text, object.caption)) {
+      const side = canFlip(object) ? 'front' : undefined
+      results.push({ object, side, title: object.name, location: side ? `${location} · Front` : location, description: object.text })
+    }
+    if (object.back && matches(object.back.title, object.back.text)) {
+      results.push({ object, side: 'back', title: object.back.title ? `${object.name} · ${object.back.title}` : object.name,
+        location: `${location} · Back`, description: object.back.text })
+    }
+  }
+  return results
+}
 
 export function createProject(name: string, parentId: string | null = null): CanvasProject {
   const now = Date.now()

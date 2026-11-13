@@ -14,12 +14,11 @@ function entries(project: CanvasProject) {
 export function useCanvasEditing(project: CanvasProject, update: (project: CanvasProject) => void) {
   const history = useRef(createHistory<EditValue>())
   const [, renderHistory] = useState(0)
-  function edit(objects: CanvasObject[], edges = project.edges) {
-    const next = { ...project, objects, edges }
+  function record(next: CanvasProject) {
     const before = entries(project)
     const after = entries(next)
     const oldObjectOrder = project.objects.map(object => object.id).filter(id => after.has(id))
-    const newObjectOrder = objects.map(object => object.id).filter(id => before.has(id))
+    const newObjectOrder = next.objects.map(object => object.id).filter(id => before.has(id))
     const oldPosition = new Map(oldObjectOrder.map((id, index) => [id, index]))
     const moved = new Set(newObjectOrder.filter((id, index) => oldPosition.get(id) !== index))
     const changes: Change<EditValue>[] = []
@@ -32,10 +31,15 @@ export function useCanvasEditing(project: CanvasProject, update: (project: Canva
       }
       changes.push({ id, before: previous ?? null, after: current ?? null })
     }
-    if (!changes.length) return
+    if (!changes.length) return false
     history.current = recordHistory(history.current, changes)
-    update(next)
     renderHistory(value => value + 1)
+    return true
+  }
+
+  function edit(objects: CanvasObject[], edges = project.edges, camera = project.camera) {
+    const next = { ...project, objects, edges, camera }
+    if (record(next)) update(next)
   }
 
   function step(direction: 'undo' | 'redo') {
@@ -58,5 +62,5 @@ export function useCanvasEditing(project: CanvasProject, update: (project: Canva
     history.current = createHistory()
     renderHistory(value => value + 1)
   }
-  return { edit, step, resetHistory, canUndo: history.current.past.length > 0, canRedo: history.current.future.length > 0 }
+  return { edit, record, step, resetHistory, canUndo: history.current.past.length > 0, canRedo: history.current.future.length > 0 }
 }

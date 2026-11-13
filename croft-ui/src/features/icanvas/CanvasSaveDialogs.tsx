@@ -2,7 +2,7 @@ import { ArrowUpRight, History, Save, X } from 'lucide-react'
 import { useEffect, useState, type FormEvent } from 'react'
 import { CanvasThumbnail } from './CanvasVisuals'
 import { CanvasDialog } from './ProjectViews'
-import { descendants, type CanvasProject } from './model'
+import { descendants, objectAssetIds, type CanvasProject } from './model'
 import {
   cloneProjectTree, getAssets, getRecoveries, getVersions, restoreRecovery, restoreVersion, saveVersion,
   type CanvasRecovery, type CanvasVersion,
@@ -75,7 +75,8 @@ export function CanvasSaveDialogs({ mode, project, projects, close, flush, write
     const tree = [project, ...descendants(projects, project.id)]
     const assetIds = tree.flatMap(canvas => [
       ...(canvas.coverAssetId ? [canvas.coverAssetId] : []),
-      ...canvas.objects.flatMap(object => object.assetId ? [object.assetId] : []),
+      ...(canvas.iconAssetId ? [canvas.iconAssetId] : []),
+      ...canvas.objects.flatMap(objectAssetIds),
     ])
     let active = true
     void getAssets(assetIds).then(assets => { if (active) setHasLinkedFile(assets.some(asset => asset.handle || asset.linked)) })

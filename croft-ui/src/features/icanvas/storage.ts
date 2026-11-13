@@ -1,4 +1,5 @@
-import type { CanvasAsset, CanvasProject } from './model'
+import { objectAssetIds, type CanvasAsset, type CanvasProject } from './model.ts'
+import { assertStackMembership } from './stackPersistence.ts'
 import { requireWorkspaceWriter } from './writerLock.ts'
 
 export type { CanvasAsset } from './model'
@@ -165,6 +166,7 @@ function validateProject(project: CanvasProject) {
       new Set(project.stops.map(stop => stop.id)).size !== project.stops.length) {
     throw new Error('The canvas contains duplicate edge or presentation stop IDs.')
   }
+  assertStackMembership(project.objects)
 }
 
 function validateHierarchy(projects: Map<string, CanvasProject>, changed: CanvasProject[]) {
@@ -207,7 +209,7 @@ function referencedAssetIds(projects: CanvasProject[]): Set<string> {
   for (const project of projects) {
     if (project.coverAssetId) ids.add(project.coverAssetId)
     if (project.iconAssetId) ids.add(project.iconAssetId)
-    for (const object of project.objects) if (object.assetId) ids.add(object.assetId)
+    for (const object of project.objects) for (const assetId of objectAssetIds(object)) ids.add(assetId)
   }
   return ids
 }
@@ -559,6 +561,7 @@ export function cloneProjectTree(
         ...object,
         id: objectIds.get(object.id)!,
         parentId: object.parentId ? objectIds.get(object.parentId) : undefined,
+        ...(object.stack ? { stack: { ...object.stack, order: object.stack.order.map(id => objectIds.get(id)!) } } : {}),
         targetId: object.targetId
           ? localReference(object.targetId) ?? (allCanvasIds.has(object.targetId) ? undefined : object.targetId)
           : undefined,

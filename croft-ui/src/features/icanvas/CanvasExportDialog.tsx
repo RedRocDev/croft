@@ -58,7 +58,7 @@ export function CanvasExportDialog({ close, projects, project, selectedIds, dark
           {limited && <p role="alert">This scope exceeds the portable export limit. Use Workspace Backup to retain the larger attachments, or choose a smaller scope for a portable copy.</p>}
           {inventory.overLimit.length > 0 && <ul aria-label="Files above the portable limit">{inventory.overLimit.slice(0, 30).map(asset => <li key={asset.id}>{asset.name} ({formatMiB(asset.size)})</li>)}</ul>}
         </> : <>
-          <p>Visual exports contain the visible layout. Audio, video, linked files, unavailable files and unsupported images appear as labels. Embedded raster images are limited to 16 MiB each, with an additional per-canvas image budget.</p>
+          <p>Visual exports show the current face of each visible card and the current stack layout. Editable packages preserve both faces and all stack members. Audio, video, linked files, unavailable files and unsupported images appear as labels. Embedded raster images are limited to 16 MiB each, with an additional per-canvas image budget.</p>
           <p>{inventory.relink.length} linked and {inventory.missing.length} missing attachments in scope. Versions and recovery history are excluded. Visual archives are limited to 100 canvases and 120 MiB. PDF fits each canvas on one A4 page.</p>
         </>}
       </section> : !error && <p role="status">Reading file inventory…</p>}

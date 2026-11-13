@@ -10,7 +10,7 @@ import { Database, type DatabaseView } from './Database'
 import { CanvasWorkspace } from './features/icanvas/CanvasWorkspace'
 import { CanvasBackupDialog } from './features/icanvas/CanvasBackupDialog'
 import { CanvasDialog, ProjectCards, ProjectTree, ProjectDetails, ProjectIcon } from './features/icanvas/ProjectViews'
-import { ancestors, createProject, type CanvasProject } from './features/icanvas/model'
+import { ancestors, createProject, searchCanvasObjects, type CanvasProject, type CardSide } from './features/icanvas/model'
 import { useCanvasProjects } from './features/icanvas/useCanvasProjects'
 
 type Page = 'home' | 'handbook' | 'weekly' | 'meeting' | 'projects'
@@ -186,7 +186,7 @@ function Document({ page, go, editorState, setEditorState }: {
 
 function SearchModal({ close, go, projects, openCanvas }: {
   close: () => void; go: (page: Page) => void; projects: CanvasProject[]
-  openCanvas: (id: string, objectId?: string) => void
+  openCanvas: (id: string, objectId?: string, side?: CardSide) => void
 }) {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
@@ -202,11 +202,10 @@ function SearchModal({ close, go, projects, openCanvas }: {
       id: project.id, title: project.name, location: 'iCanvas', description: project.description,
       icon: <span className="page-icon tile sage"><ProjectIcon project={project} /></span>, open: () => openCanvas(project.id),
     })
-    for (const object of project.objects) {
-      if (!(object.name + ' ' + object.text + ' ' + (object.caption ?? '')).toLowerCase().includes(term)) continue
+    for (const match of searchCanvasObjects(project, term)) {
       options.push({
-        id: object.id, title: object.name, location: project.name, description: object.text,
-        icon: <span className="page-icon tile sage"><FileText /></span>, open: () => openCanvas(project.id, object.id),
+        id: `${project.id}/${match.object.id}/${match.side ?? ''}`, title: match.title, location: match.location, description: match.description,
+        icon: <span className="page-icon tile sage"><FileText /></span>, open: () => openCanvas(project.id, match.object.id, match.side),
       })
       if (options.length >= 60) break
     }
@@ -316,7 +315,7 @@ export function App() {
   const canEdit = canvases.access === 'writer'
   const [draftCanvas, setDraftCanvas] = useState<CanvasProject | null>(null)
   const [showBackup, setShowBackup] = useState(false)
-  const [jump, setJump] = useState<{ id: string; event: number }>()
+  const [jump, setJump] = useState<{ id: string; event: number; side?: CardSide }>()
   const [current, setCurrent] = useState(route)
   const [overlay, setOverlay] = useState<Overlay>(null)
   const [menu, setMenu] = useState<'page' | 'share' | null>(null)
@@ -344,8 +343,8 @@ export function App() {
     if (innerWidth < 800) setSidebar(false)
   }
 
-  function openCanvas(id: string, objectId?: string) {
-    setJump(objectId ? { id: objectId, event: Date.now() } : undefined)
+  function openCanvas(id: string, objectId?: string, side?: CardSide) {
+    setJump(objectId ? { id: objectId, side, event: performance.now() } : undefined)
     location.hash = 'canvas/' + id
     setCurrent({ page: 'home', view: 'table', canvasId: id })
     setOverlay(null)
