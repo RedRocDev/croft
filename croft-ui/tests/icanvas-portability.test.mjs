@@ -10,6 +10,7 @@ const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAA
 test('editable package preserves nested canvases, media, edges, and presentation targets with new IDs', async () => {
   const originals = seedProjects()
   const root = originals[0]
+  root.camera = { x: -64e12 - 128, y: 64e12 + 128, zoom: 64 }
   const mediaId = crypto.randomUUID()
   const linkedId = crypto.randomUUID()
   root.coverAssetId = mediaId
@@ -26,6 +27,7 @@ test('editable package preserves nested canvases, media, edges, and presentation
   const [copy, child, grandchild] = projects
   assert.notEqual(copy.id, root.id)
   assert.equal(copy.parentId, null)
+  assert.deepEqual(copy.camera, root.camera)
   assert.equal(child.parentId, copy.id)
   assert.equal(grandchild.parentId, child.id)
   assert.equal(copy.objects.find((item) => item.kind === 'canvas').targetId, child.id)
@@ -43,7 +45,7 @@ test('editable package preserves nested canvases, media, edges, and presentation
   assert.equal(image.assetId, importedImage.id)
   assert.equal(image.x, -46)
   assert.deepEqual(Buffer.from(await importedImage.blob.arrayBuffer()), imageBytes)
-  assert.deepEqual(assets.find((asset) => asset.name === 'linked.txt'), { id: copy.objects.find((item) => item.kind === 'file').assetId, name: 'linked.txt', mime: 'text/plain', size: 320 })
+  assert.deepEqual(assets.find((asset) => asset.name === 'linked.txt'), { id: copy.objects.find((item) => item.kind === 'file').assetId, name: 'linked.txt', mime: 'text/plain', size: 320, linked: true })
 })
 
 test('current canvas and selected object packages omit content outside their scope', async () => {

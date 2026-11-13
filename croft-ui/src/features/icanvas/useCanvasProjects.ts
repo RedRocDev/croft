@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { seedProjects, type CanvasAsset, type CanvasProject } from './model'
 import { getProjects, manualSave, saveProjects, saveRecovery } from './storage'
+import { requestWorkspaceWriter, requireWorkspaceWriter } from './writerLock.ts'
+
+type WorkspaceAccess = 'opening' | 'writer' | 'readonly'
 
 export function useCanvasProjects() {
   const [projects, setProjects] = useState<CanvasProject[]>([])
   const [status, setStatus] = useState<'Loading' | 'Unsaved' | 'Saving' | 'Saved' | 'Save failed'>('Loading')
   const [error, setError] = useState('')
+  const [access, setAccess] = useState<WorkspaceAccess>('opening')
+  const [accessReason, setAccessReason] = useState('')
+  const accessRef = useRef<WorkspaceAccess>('opening')
+  const opening = useRef<Promise<void> | undefined>(undefined)
   const projectsRef = useRef(projects)
   const pending = useRef(new Map<string, CanvasProject>())
   const recovery = useRef(new Map<string, CanvasProject>())
@@ -19,25 +26,45 @@ export function useCanvasProjects() {
     return next
   }, [])
 
-  const load = useCallback(async () => {
-    const saved = await getProjects()
-    if (!saved.length) {
-      saved.push(...seedProjects())
-      await saveProjects(saved)
-    }
-    projectsRef.current = saved
-    setProjects(saved)
-    setStatus('Saved')
-  }, [])
+  const requestEditing = useCallback(() => {
+    if (accessRef.current === 'writer') return Promise.resolve()
+    if (opening.current) return opening.current
+    setAccess('opening')
+    setStatus('Loading')
+    setError('')
+    setAccessReason('')
+    const attempt = enqueue(async () => {
+      const lease = await requestWorkspaceWriter()
+      const saved = await getProjects()
+      if (lease.writable && !saved.length) {
+        saved.push(...seedProjects())
+        await saveProjects(saved)
+      }
+      // A formerly read-only tab must use the committed head from the prior writer.
+      projectsRef.current = saved
+      setProjects(saved)
+      accessRef.current = lease.writable ? 'writer' : 'readonly'
+      setAccess(accessRef.current)
+      if (!lease.writable) setAccessReason(lease.reason)
+      setStatus('Saved')
+    }).catch(reason => {
+      accessRef.current = 'readonly'
+      setAccess('readonly')
+      setError(String(reason))
+      setStatus('Save failed')
+      setAccessReason('Croft could not read this workspace. Retry to reopen it.')
+    }).finally(() => { opening.current = undefined })
+    opening.current = attempt
+    return attempt
+  }, [enqueue])
 
   useEffect(() => {
-    void load().catch(reason => {
-      setStatus('Save failed')
-      setError(String(reason))
-    })
-  }, [load])
+    void requestEditing()
+  }, [requestEditing])
 
   const flush = useCallback(async (clearRecoveryFor?: string) => {
+    requireWorkspaceWriter()
+    if (accessRef.current !== 'writer') throw new Error('Enable editing before saving.')
     clearTimeout(timer.current)
     activeWrites.current++
     setStatus('Saving')
@@ -55,7 +82,7 @@ export function useCanvasProjects() {
         for (const project of batch) if (pending.current.get(project.id) === project) pending.current.delete(project.id)
       })
       setError('')
-      setStatus(pending.current.size ? 'Unsaved' : 'Saved')
+      setStatus(activeWrites.current > 1 ? 'Saving' : pending.current.size ? 'Unsaved' : 'Saved')
     } catch (reason) {
       setError(String(reason))
       setStatus('Save failed')
@@ -65,6 +92,7 @@ export function useCanvasProjects() {
 
   useEffect(() => {
     const interval = setInterval(() => {
+      if (accessRef.current !== 'writer') return
       const batch = [...recovery.current.values()]
       if (!batch.length) return
       void enqueue(async () => {
@@ -90,7 +118,10 @@ export function useCanvasProjects() {
   }, [enqueue])
 
   function update(project: CanvasProject, contentChanged = true) {
-    const next = contentChanged ? { ...project, updatedAt: Date.now() } : project
+    if (accessRef.current !== 'writer') return
+    const prior = projectsRef.current.find(current => current.id === project.id)
+    if (!prior) return
+    const next = contentChanged ? { ...project, updatedAt: Math.max(Date.now(), prior.updatedAt + 1) } : project
     const list = projectsRef.current.map(current => current.id === next.id ? next : current)
     projectsRef.current = list
     setProjects(list)
@@ -102,20 +133,26 @@ export function useCanvasProjects() {
   }
 
   async function write(batch: CanvasProject[], assets?: CanvasAsset[]) {
+    requireWorkspaceWriter()
+    if (accessRef.current !== 'writer') throw new Error('Enable editing before saving.')
     const starting = new Map(batch.map(project => [project.id, projectsRef.current.find(current => current.id === project.id)]))
+    const staged = batch.map(project => {
+      const current = starting.get(project.id)
+      return current ? { ...project, updatedAt: Math.max(project.updatedAt, current.updatedAt + 1, Date.now()) } : project
+    })
     activeWrites.current++
     setStatus('Saving')
     try {
       await enqueue(async () => {
-        await saveProjects(batch, assets)
+        await saveProjects(staged, assets)
         const next = new Map(projectsRef.current.map(project => [project.id, project]))
-        for (const project of batch) {
+        for (const project of staged) {
           const initial = starting.get(project.id)
           const latest = next.get(project.id)
           if (initial && latest && initial !== latest) {
             const concurrentChanges = Object.fromEntries(Object.entries(latest).filter(([key, value]) =>
               initial[key as keyof CanvasProject] !== value))
-            const merged = { ...project, ...concurrentChanges, updatedAt: Math.max(project.updatedAt, latest.updatedAt) }
+            const merged = { ...project, ...concurrentChanges, updatedAt: Math.max(project.updatedAt + 1, latest.updatedAt) }
             next.set(project.id, merged)
             pending.current.set(project.id, merged)
             recovery.current.set(project.id, merged)
@@ -124,13 +161,13 @@ export function useCanvasProjects() {
           } else {
             next.set(project.id, project)
             pending.current.delete(project.id)
-            if (recovery.current.has(project.id)) recovery.current.set(project.id, project)
+            recovery.current.set(project.id, project)
           }
         }
         projectsRef.current = [...next.values()]
         setProjects(projectsRef.current)
       })
-      setStatus(pending.current.size ? 'Unsaved' : 'Saved')
+      setStatus(activeWrites.current > 1 ? 'Saving' : pending.current.size ? 'Unsaved' : 'Saved')
       setError('')
     } catch (reason) {
       setStatus('Save failed')
@@ -146,5 +183,5 @@ export function useCanvasProjects() {
       setProjects(projectsRef.current)
     })
   }
-  return { projects, status, error, update, write, flush, refresh }
+  return { projects, status, error, access, accessReason, requestEditing, update, write, flush, refresh }
 }

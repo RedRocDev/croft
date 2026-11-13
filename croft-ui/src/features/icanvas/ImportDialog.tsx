@@ -21,11 +21,11 @@ const permittedMedia = new Set([
 ])
 const rasterTypes = new Set(['image/avif', 'image/bmp', 'image/gif', 'image/jpeg', 'image/png', 'image/webp'])
 
-export async function pickCanvasFiles(): Promise<CanvasFile[] | undefined> {
+export async function pickCanvasFiles(multiple = true): Promise<CanvasFile[] | undefined> {
   const native = (window as Window & { showOpenFilePicker?: NativePicker }).showOpenFilePicker
   if (!native) return undefined
   try {
-    const handles = await native.call(window, { multiple: true })
+    const handles = await native.call(window, { multiple })
     return await Promise.all(handles.map(async handle => ({ handle, file: await handle.getFile() })))
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return []
@@ -67,7 +67,7 @@ function preliminaryWarning(file: File) {
   return ''
 }
 
-async function safeMime(file: File) {
+export async function safeCanvasMime(file: File) {
   const warning = preliminaryWarning(file)
   if (warning) throw new Error(warning)
   const prefix = new Uint8Array(await file.slice(0, 2048).arrayBuffer())
@@ -92,7 +92,7 @@ async function safeMime(file: File) {
 export async function prepareCanvasAsset(entry: CanvasFile, mode: CanvasImportMode): Promise<CanvasPreparedAsset> {
   const { file, handle } = entry
   if (mode === 'link' && !handle) throw new Error('Choose a file with browser permission to Link In.')
-  const mime = await safeMime(file)
+  const mime = await safeCanvasMime(file)
   const asset: CanvasPreparedAsset = { id: crypto.randomUUID(), name: file.name, mime, size: file.size }
   const validated = file.slice(0, file.size, mime)
   if (rasterTypes.has(mime)) {
@@ -104,19 +104,20 @@ export async function prepareCanvasAsset(entry: CanvasFile, mode: CanvasImportMo
       throw new Error('This image could not be decoded.')
     }
   }
-  return mode === 'link' ? { ...asset, handle } : { ...asset, blob: validated }
+  return mode === 'link' ? { ...asset, handle, linked: true } : { ...asset, blob: validated }
 }
 
 export function ImportDialog({
-  files, close, onImport,
+  files, close, onImport, relink = false,
 }: {
   files: CanvasFile[]
   close: () => void
   onImport: (assets: CanvasPreparedAsset[]) => Promise<void>
+  relink?: boolean
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [expanded, setExpanded] = useState(false)
-  const [modes, setModes] = useState<CanvasImportMode[]>(() => files.map(() => 'import'))
+  const [modes, setModes] = useState<CanvasImportMode[]>(() => files.map(entry => relink && entry.handle ? 'link' : 'import'))
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState('')
   const [error, setError] = useState('')
@@ -127,6 +128,7 @@ export function ImportDialog({
   const canLinkAny = eligible.some(entry => entry.handle)
   const totalBytes = files.reduce((size, { file }, index) => size + (modes[index] === 'import' && !preliminaryWarning(file) ? file.size : 0), 0)
   const oversized = totalBytes > batchLimit
+  const invalidReplacement = relink && files.length !== 1
 
   useEffect(() => {
     const node = dialog.current
@@ -139,6 +141,7 @@ export function ImportDialog({
   }
 
   async function submit() {
+    if (invalidReplacement || oversized || busy) return
     setBusy(true)
     setError('')
     const assets: CanvasPreparedAsset[] = []
@@ -174,19 +177,20 @@ export function ImportDialog({
     if (!busy) close()
   }}>
     <div className="ic-import-heading">
-      <h2 id="ic-import-title">Add files</h2>
+      <h2 id="ic-import-title">{relink ? 'Relink file' : 'Add files'}</h2>
       <span>{files.length} {files.length === 1 ? 'file' : 'files'}</span>
       <button type="button" className="ic-import-toggle ic-button" aria-expanded={expanded} disabled={busy || finished} onClick={() => setExpanded(current => !current)}>
         {expanded ? <>Collapse <ChevronDown size={14} /></> : <>Expand <ChevronRight size={14} /></>}
       </button>
-      <button type="button" aria-label="Close Add files" className="ic-import-close" disabled={busy} onClick={close}><X size={17} /></button>
+      <button type="button" aria-label={relink ? 'Close Relink file' : 'Close Add files'} className="ic-import-close" disabled={busy} onClick={close}><X size={17} /></button>
     </div>
     <div className="ic-import-settings">
       <div className="ic-import-selection"><span>Apply to all</span><div className="ic-import-segments" role="group" aria-label="Apply to all files">
         <button type="button" aria-pressed={linked === 0} disabled={busy || finished} onClick={() => applyToAll('import')}>Import</button>
         <button type="button" aria-pressed={linked === files.length && linked > 0} disabled={busy || finished || !canLinkAny} onClick={() => applyToAll('link')}>Link In</button>
       </div></div>
-      {!allLinkable && <p className="ic-import-hint">{canLinkAny ? 'Files without a browser file handle will be imported.' : 'Link In needs a browser file handle. These files can be imported.'}</p>}
+      {relink && <p className="ic-import-hint">{canLinkAny ? 'Link In keeps the file in its current location. Import stores a copy in Croft.' : 'The browser supplied a file copy. Import it into Croft or cancel to keep the existing link.'}</p>}
+      {!relink && !allLinkable && <p className="ic-import-hint">{canLinkAny ? 'Files without a browser file handle will be imported.' : 'Link In needs a browser file handle. These files can be imported.'}</p>}
       {expanded && <ul className="ic-import-list">
         {files.map(({ file, handle }, index) => {
           const warning = preliminaryWarning(file)
@@ -201,13 +205,14 @@ export function ImportDialog({
         })}
       </ul>}
       {oversized && <p role="alert" className="ic-import-error"><AlertTriangle size={15} /> Imported files must total no more than 250 MiB per batch.</p>}
+      {invalidReplacement && <p role="alert" className="ic-import-error"><AlertTriangle size={15} /> Choose exactly one replacement file.</p>}
       {error && <p role="alert" className="ic-import-error"><AlertTriangle size={15} /> {error}</p>}
       {skipped.length > 0 && <ul className="ic-import-skipped" aria-label="Files skipped">{skipped.map((issue, index) => <li key={index}>{issue}</li>)}</ul>}
     </div>
     <div className="ic-import-footer">
       <span role="status">{progress || (finished ? `${skipped.length} ${skipped.length === 1 ? 'file skipped' : 'files skipped'}` : `${files.length - linked} Import · ${linked} Link In`)}</span>
       {!finished && <button type="button" className="ic-button" disabled={busy} onClick={close}>Cancel</button>}
-      <button type="button" className="ic-button ic-import-primary" disabled={busy || (!finished && oversized)} onClick={() => finished ? close() : void submit()}>{finished ? 'Done' : 'Add'}</button>
+      <button type="button" className="ic-button ic-import-primary" disabled={busy || (!finished && (oversized || invalidReplacement))} onClick={() => finished ? close() : void submit()}>{finished ? 'Done' : relink ? 'Relink' : 'Add'}</button>
     </div>
   </dialog>
 }

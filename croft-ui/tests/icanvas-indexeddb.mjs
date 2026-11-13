@@ -17,8 +17,8 @@ const server = createServer(async (request, response) => {
   if (route === '/') {
     response.setHeader('content-type', 'text/html')
     response.end(dom)
-  } else if (route === '/storage' || route === '/model') {
-    const source = await readFile(path.join(base, route.slice(1) + '.ts'), 'utf8')
+  } else if (route === '/storage' || route === '/model' || route === '/writerLock.ts') {
+    const source = await readFile(path.join(base, route.slice(1).replace(/\.ts$/, '') + '.ts'), 'utf8')
     response.setHeader('content-type', 'text/javascript')
     response.end(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText)
   } else {
@@ -34,6 +34,7 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/`)
   const results = await page.evaluate(async () => {
     const store = await import('/storage')
+    const { requestWorkspaceWriter } = await import('/writerLock.ts')
     const { createProject, makeObject } = await import('/model')
     function check(condition, message) { if (!condition) throw new Error(message) }
     async function rejects(promise, pattern) {
@@ -44,6 +45,7 @@ try {
       throw new Error('Expected operation to fail.')
     }
 
+    check((await requestWorkspaceWriter()).writable, 'The test tab could not acquire the writer lease.')
     const root = createProject('Trip')
     const child = createProject('Hotels', root.id)
     const asset = { id: 'synthetic-data', name: 'sample.txt', mime: 'text/plain', size: 11, blob: new Blob(['test sample'], { type: 'text/plain' }) }

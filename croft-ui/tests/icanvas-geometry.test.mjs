@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  MAX_ZOOM, MIN_ZOOM, connectionEndpoints, fitViewport, intersects, placePoint, rectCenter,
-  rotatedBounds, screenToWorld, snapPoint, visibleInViewport, worldToScreen, zoomAt,
+  MAX_ZOOM, MIN_ZOOM, connectionEndpoints, containsPoint, fitFrameAround, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter,
+  renderOrigin, rotatedBounds, screenToWorld, snapPoint, transformDescendant, visibleInViewport, worldToScreen, zoomAt,
 } from '../src/features/icanvas/geometry.ts'
 
 const closeTo = (actual, expected) => assert.ok(
@@ -18,7 +18,7 @@ test('camera transforms are inverse for translated, zoomed and negative coordina
   closeTo(restored.y, world.y)
 })
 
-test('zoom clamps to 5–800% and preserves the world point under the cursor', () => {
+test('zoom clamps to 0.25–6400% and preserves the world point under the cursor', () => {
   const camera = { x: 37, y: -111, zoom: 0.7 }
   const cursor = { x: 315, y: 251 }
   const anchor = screenToWorld(cursor, camera)
@@ -32,6 +32,73 @@ test('zoom clamps to 5–800% and preserves the world point under the cursor', (
   }
   assert.equal(zoomAt(camera, cursor, 1, { min: 2 }).zoom, 2)
   assert.equal(zoomAt(camera, cursor, camera.zoom), camera)
+})
+
+test('pinch moves the initial world focal point under the current midpoint', () => {
+  const camera = { x: 80, y: -45, zoom: 1.2 }
+  const start = { x: 214, y: 350 }
+  const end = { x: 352, y: 286 }
+  const viewport = pinchViewport(camera, start, end, 3)
+  closeTo(viewport.zoom, 3.6)
+  const point = worldToScreen(screenToWorld(start, camera), viewport)
+  closeTo(point.x, end.x)
+  closeTo(point.y, end.y)
+})
+
+test('rebasing keeps very distant objects at the same screen positions at both zoom bounds', () => {
+  const point = { x: 987_123_456.125, y: -123_456_789.375 }
+  for (const zoom of [MIN_ZOOM, MAX_ZOOM]) {
+    const camera = { x: 245 - point.x * zoom, y: 306 - point.y * zoom, zoom }
+    const origin = renderOrigin(camera)
+    const offset = worldToScreen(origin, camera)
+    const rebased = worldToScreen({ x: point.x - origin.x, y: point.y - origin.y }, { ...offset, zoom })
+    closeTo(rebased.x, 245)
+    closeTo(rebased.y, 306)
+  }
+  assert.ok(gridAtZoom(MIN_ZOOM) >= 8)
+  assert.equal(gridAtZoom(1), 24)
+})
+
+test('object snapping matches adjacent gaps and equal spacing between two neighbours', () => {
+  const neighbours = [{ x: 100, y: 20, width: 20, height: 20 }, { x: 150, y: 20, width: 20, height: 20 }]
+  for (const [x, expected] of [[197, 200], [46, 50], [126, 125]]) {
+    const result = objectSnap({ x, y: 22, width: 20, height: 20 }, neighbours, 6)
+    assert.deepEqual(result, { point: { x: expected, y: 20 }, axes: { x: true, y: true } })
+  }
+  assert.equal(objectSnap({ x: 197, y: 85, width: 20, height: 20 }, neighbours, 6).axes.x, false)
+  const vertical = neighbours.map(item => ({ ...item, x: item.y, y: item.x }))
+  assert.equal(objectSnap({ x: 22, y: 198, width: 20, height: 20 }, vertical, 6).point.y, 200)
+})
+
+test('world-space nested container transforms scale each descendant once and invert without drift', () => {
+  const before = { x: 100, y: 100, width: 200, height: 200, rotation: 0 }
+  const after = { x: 320, y: -50, width: 400, height: 400, rotation: 90 }
+  const frame = { x: 125, y: 150, width: 40, height: 40, rotation: 20 }
+  const stroke = { x: 140, y: 164, width: 20, height: 10, rotation: 27, points: [{ x: 3, y: 2 }] }
+  const transformedFrame = transformDescendant(frame, before, after, 2)
+  const transformedStroke = transformDescendant(stroke, before, after, 2)
+  const chainedStroke = transformDescendant(stroke, frame, transformedFrame, 2)
+  closeTo(transformedStroke.x, chainedStroke.x)
+  closeTo(transformedStroke.y, chainedStroke.y)
+  assert.deepEqual(transformedStroke.points, [{ x: 6, y: 4 }])
+  const reversed = transformDescendant(transformedStroke, after, before, .5)
+  closeTo(reversed.x, stroke.x)
+  closeTo(reversed.y, stroke.y)
+  assert.equal(reversed.rotation, stroke.rotation)
+  assert.deepEqual(reversed.points, stroke.points)
+})
+
+test('rotated frames grow around content without moving the child or losing the old area', () => {
+  const frame = { x: 30, y: 40, width: 100, height: 100, rotation: 45 }
+  const child = { x: 5, y: 200, width: 30, height: 90, rotation: -25 }
+  const grown = fitFrameAround(frame, child)
+  assert.equal(grown.rotation, frame.rotation)
+  assert.ok(grown.width > frame.width || grown.height > frame.height)
+  assert.ok(containsPoint(grown, rectCenter(child)))
+  assert.ok(containsPoint(grown, rectCenter(frame)))
+  const repeated = fitFrameAround(grown, child)
+  closeTo(repeated.x, grown.x)
+  closeTo(repeated.height, grown.height)
 })
 
 test('rotation expands the bounds around the same center', () => {

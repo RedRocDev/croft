@@ -8,7 +8,8 @@ import {
 } from 'lucide-react'
 import { Database, type DatabaseView } from './Database'
 import { CanvasWorkspace } from './features/icanvas/CanvasWorkspace'
-import { CanvasDialog, ProjectCards, ProjectTree, ProjectDetails } from './features/icanvas/ProjectViews'
+import { CanvasBackupDialog } from './features/icanvas/CanvasBackupDialog'
+import { CanvasDialog, ProjectCards, ProjectTree, ProjectDetails, ProjectIcon } from './features/icanvas/ProjectViews'
 import { ancestors, createProject, type CanvasProject } from './features/icanvas/model'
 import { useCanvasProjects } from './features/icanvas/useCanvasProjects'
 
@@ -199,7 +200,7 @@ function SearchModal({ close, go, projects, openCanvas }: {
   if (term) for (const project of projects) {
     if ((project.name + ' ' + project.description).toLowerCase().includes(term)) options.push({
       id: project.id, title: project.name, location: 'iCanvas', description: project.description,
-      icon: <span className="page-icon tile sage">{project.icon}</span>, open: () => openCanvas(project.id),
+      icon: <span className="page-icon tile sage"><ProjectIcon project={project} /></span>, open: () => openCanvas(project.id),
     })
     for (const object of project.objects) {
       if (!(object.name + ' ' + object.text + ' ' + (object.caption ?? '')).toLowerCase().includes(term)) continue
@@ -312,7 +313,9 @@ function EmptyDialog({ label, message, icon: Icon, close }: {
 
 export function App() {
   const canvases = useCanvasProjects()
+  const canEdit = canvases.access === 'writer'
   const [draftCanvas, setDraftCanvas] = useState<CanvasProject | null>(null)
+  const [showBackup, setShowBackup] = useState(false)
   const [jump, setJump] = useState<{ id: string; event: number }>()
   const [current, setCurrent] = useState(route)
   const [overlay, setOverlay] = useState<Overlay>(null)
@@ -462,6 +465,10 @@ export function App() {
       </aside>
     </>}
     <main className="workspace-main">
+      {canvases.access === 'readonly' && <div className="ic-access-banner" role="status">
+        <span><strong>Read-only.</strong> {canvases.accessReason || 'Close the other editing tab, then enable editing here to load the latest saved work.'}</span>
+        <button className="ic-button" onClick={() => void canvases.requestEditing()}>Enable editing</button>
+      </div>}
       {canvas ? <CanvasWorkspace key={canvas.id} project={canvas} store={canvases} sidebarOpen={sidebar}
         sidebarToggleRef={sidebarToggleRef} toggleSidebar={toggleSidebar} openCanvas={openCanvas} goHome={() => go('home')}
         openPage={id => go(pageIds.includes(id as Page) ? id as Page : 'home')} jump={jump} dark={dark} /> :
@@ -499,7 +506,8 @@ export function App() {
       </header>
       <div className="workspace-scroll" key={page}>
         {page === 'home' ? <Home go={go}><ProjectCards projects={activeCanvases} create={() => setDraftCanvas(createProject(''))}
-          open={openCanvas} details={setDraftCanvas} importProjects={canvases.write} error={canvases.error} /></Home> :
+          open={openCanvas} details={setDraftCanvas} importProjects={canvases.write} error={canvases.error} canEdit={canEdit}
+          openBackup={() => setShowBackup(true)} /></Home> :
           page === 'projects' ? <Database view={view} onView={tab => { location.hash = 'projects/' + tab; setCurrent({ page, view: tab, canvasId: '' }) }} /> :
           <Document key={page} page={page} go={go} editorState={editorState} setEditorState={setEditorState} />}
       </div>
@@ -507,7 +515,8 @@ export function App() {
     </main>
     {overlay === 'inbox' && <EmptyDialog label="Inbox" message="You’re all caught up." icon={Inbox} close={closeOverlay} />}
     {overlay === 'search' && <SearchModal close={closeOverlay} go={go} projects={activeCanvases} openCanvas={openCanvas} />}
-    {draftCanvas && <ProjectDetails project={draftCanvas} close={() => setDraftCanvas(null)}
+    {showBackup && <CanvasBackupDialog close={() => setShowBackup(false)} flush={canvases.flush} canRestore={canEdit} />}
+    {draftCanvas && canEdit && <ProjectDetails project={draftCanvas} close={() => setDraftCanvas(null)}
       onSave={async (project, assets) => {
         await canvases.write([project], assets)
         setDraftCanvas(null)
@@ -518,7 +527,7 @@ export function App() {
       <CanvasDialog title="Trash" close={closeOverlay}><div className="ic-form">
         {trashedCanvases.map(project => <div className="ic-row" key={project.id}>
           <span>{project.name}</span>
-          <button className="ic-button" onClick={() => {
+          <button className="ic-button" disabled={!canEdit} onClick={() => {
             void canvases.write([{ ...project, trashedAt: undefined, updatedAt: Date.now() }]).catch(() => {})
           }}>Restore {project.name}</button>
         </div>)}

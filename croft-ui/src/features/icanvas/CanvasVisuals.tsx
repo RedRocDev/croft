@@ -1,30 +1,108 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AudioLines, FileText, Layers, Video } from 'lucide-react'
+import { safeCanvasMime } from './ImportDialog'
+import { canRequestFileRead, fileAccessProblem, readLinkedFile, requestFileRead, type FileAccessProblem } from './linkedFiles'
 import { getAsset } from './storage'
 import { objectFlags, type CanvasObject, type CanvasProject } from './model'
 
+type MediaResult = { url?: string; problem?: FileAccessProblem; handle?: FileSystemFileHandle }
+
 export function useAssetUrl(assetId?: string) {
-  const [result, setResult] = useState<{ id: string; url?: string; missing?: boolean }>({ id: '' })
+  const [result, setResult] = useState<{ id: string } & MediaResult>()
+  const [refresh, setRefresh] = useState(0)
+  const [requesting, setRequesting] = useState(false)
+  const [requestResult, setRequestResult] = useState<{ id: string; problem: FileAccessProblem }>()
+  const currentId = useRef(assetId)
+  currentId.current = assetId
+
   useEffect(() => {
     if (!assetId) return
+    const id = assetId
     let active = true
+    let requestVersion = 0
     let url: string | undefined
-    void getAsset(assetId).then(async asset => {
-      const file = asset?.blob ?? await asset?.handle?.getFile()
-      if (!active) return
-      const matches = file && asset && file.size === asset.size &&
-        (asset.blob || ((!file.type || file.type === asset.mime) && file instanceof File && file.name === asset.name))
-      url = matches && file ? URL.createObjectURL(new Blob([file], { type: asset.mime })) : undefined
-      setResult({ id: assetId, url, missing: !url })
-    }).catch(() => {
-      if (active) setResult({ id: assetId, missing: true })
-    })
+    let listening = false
+    let previousModified: number | undefined
+
+    async function observe() {
+      const version = ++requestVersion
+      let next: MediaResult
+      let blob: Blob | undefined
+      let modified: number | undefined
+      try {
+        const asset = await getAsset(id)
+        if (!active || version !== requestVersion) return
+        if (!listening && !asset?.blob && asset?.handle) {
+          listening = true
+          window.addEventListener('focus', onFocus)
+          document.addEventListener('visibilitychange', onVisible)
+        }
+        if (!asset) next = { problem: 'missing' }
+        else if (asset.blob) {
+          next = asset.blob.size === asset.size ? {} : { problem: 'unavailable' }
+          if (!next.problem) blob = asset.blob.slice(0, asset.blob.size, asset.mime)
+        } else if (asset.handle) {
+          const outcome = await readLinkedFile({ ...asset, handle: asset.handle }, safeCanvasMime)
+          next = { handle: asset.handle }
+          if ('file' in outcome) {
+            blob = outcome.file.slice(0, outcome.file.size, asset.mime)
+            modified = outcome.file.lastModified
+          } else next.problem = outcome.problem
+        } else next = { problem: 'unavailable' }
+      } catch (error) {
+        next = { problem: fileAccessProblem(error) }
+      }
+      if (!active || version !== requestVersion) return
+      if (!blob || !url || modified !== previousModified) {
+        if (url) URL.revokeObjectURL(url)
+        url = blob && URL.createObjectURL(blob)
+      }
+      previousModified = modified
+      setResult({ id, ...next, url })
+    }
+
+    const onFocus = () => { void observe() }
+    const onVisible = () => { if (document.visibilityState === 'visible') onFocus() }
+    void observe()
     return () => {
       active = false
+      if (listening) {
+        window.removeEventListener('focus', onFocus)
+        document.removeEventListener('visibilitychange', onVisible)
+      }
       if (url) URL.revokeObjectURL(url)
     }
-  }, [assetId])
-  return result.id === assetId ? result : { url: undefined, missing: false }
+  }, [assetId, refresh])
+
+  const current = result?.id === assetId ? result : undefined
+  const handle = current?.handle
+  function retry() {
+    setRequestResult(undefined)
+    setRefresh(value => value + 1)
+  }
+  async function restoreAccess() {
+    if (!assetId || !handle || requesting) return
+    setRequestResult(undefined)
+    setRequesting(true)
+    try {
+      const permission = await requestFileRead(handle)
+      if (currentId.current !== assetId) return
+      if (permission === 'granted') retry()
+      else setRequestResult({ id: assetId, problem: permission ?? 'unavailable' })
+    } catch (error) {
+      if (currentId.current === assetId) setRequestResult({ id: assetId, problem: fileAccessProblem(error) })
+    } finally {
+      setRequesting(false)
+    }
+  }
+  return {
+    url: current?.url,
+    problem: current?.problem,
+    requestProblem: requestResult?.id === assetId ? requestResult?.problem : undefined,
+    requesting,
+    restoreAccess: handle && canRequestFileRead(handle) ? restoreAccess : undefined,
+    retry,
+  }
 }
 
 export function CanvasThumbnail({ project }: { project: CanvasProject }) {
@@ -43,12 +121,33 @@ export function CanvasThumbnail({ project }: { project: CanvasProject }) {
   </svg>
 }
 
-export function ObjectContent({ object, target, reloadMedia, replace }: {
-  object: CanvasObject; target?: CanvasProject; reloadMedia?: string; replace: () => void
+const fileMessages: Record<FileAccessProblem, string> = {
+  prompt: 'File permission needed',
+  denied: 'File access denied',
+  missing: 'File missing or moved',
+  changed: 'File changed since it was linked',
+  unavailable: 'File unavailable',
+}
+
+export function ObjectContent({ object, target, reloadMedia, replace, canRelink = true }: {
+  object: CanvasObject; target?: CanvasProject; reloadMedia?: string; replace: () => void; canRelink?: boolean
 }) {
-  const { url, missing } = useAssetUrl(reloadMedia)
+  const { url, problem, requesting, requestProblem, restoreAccess, retry } = useAssetUrl(reloadMedia)
   const media = object.kind === 'audio' || object.kind === 'video' || object.kind === 'image' || object.kind === 'file'
-  if (media && missing) return <div className="ic-media-placeholder"><FileText size={16} /><span>File unavailable</span><button onClick={replace}>Relink File</button></div>
+  if (media && (problem || !reloadMedia)) {
+    const status = problem ?? 'unavailable'
+    const canRestore = !!restoreAccess && (status === 'prompt' || status === 'denied')
+    return <div className="ic-media-placeholder ic-file-access" data-media-control>
+      <FileText size={16} />
+      <span role="status">{fileMessages[requestProblem ?? status]}</span>
+      <div>
+        {canRestore ? <button type="button" disabled={requesting} onClick={() => void restoreAccess()}>
+          {requesting ? 'Waiting for browser…' : 'Restore access'}
+        </button> : reloadMedia && status !== 'unavailable' && <button type="button" onClick={retry}>Check again</button>}
+        {canRelink && <button type="button" disabled={requesting} onClick={replace}>Relink File</button>}
+      </div>
+    </div>
+  }
   switch (object.kind) {
     case 'image': return url ? <img className="ic-image" src={url} alt={object.name} draggable={false} /> : <div className="ic-media-placeholder">Loading image…</div>
     case 'audio': return url ? <audio controls preload="metadata" src={url} aria-label={object.name} /> : <div className="ic-media-placeholder"><AudioLines size={18} /> Audio</div>

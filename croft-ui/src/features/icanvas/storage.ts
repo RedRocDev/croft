@@ -1,4 +1,5 @@
 import type { CanvasAsset, CanvasProject } from './model'
+import { requireWorkspaceWriter } from './writerLock.ts'
 
 export type { CanvasAsset } from './model'
 
@@ -13,6 +14,13 @@ export type CanvasVersion = CanvasRecovery & {
   number: number
   notes: string
   descendants: CanvasProject[]
+}
+
+export type WorkspaceStorageState = {
+  projects: CanvasProject[]
+  assets: CanvasAsset[]
+  versions: CanvasVersion[]
+  recoveries: CanvasRecovery[]
 }
 
 const dbName = 'croft-icanvas'
@@ -89,26 +97,31 @@ async function transaction<T>(
   mode: IDBTransactionMode,
   run: (tx: IDBTransaction) => Promise<T>,
 ): Promise<T> {
-  const db = await openDatabase()
-  const tx = mode === 'readwrite'
-    ? db.transaction(names, mode, { durability: 'strict' })
-    : db.transaction(names, mode)
-  const completed = new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve()
-    tx.onabort = () => reject(tx.error ?? new Error('The iCanvas save was interrupted.'))
-  })
-  void completed.catch(() => {})
   try {
-    const outcome = await run(tx)
-    await completed
-    return outcome
-  } catch (error) {
+    if (mode === 'readwrite') requireWorkspaceWriter()
+    const db = await openDatabase()
+    const tx = mode === 'readwrite'
+      ? db.transaction(names, mode, { durability: 'strict' })
+      : db.transaction(names, mode)
+    const completed = new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onabort = () => reject(tx.error ?? new Error('The iCanvas save was interrupted.'))
+    })
+    void completed.catch(() => {})
     try {
-      tx.abort()
-    } catch {
-      // A request may already have aborted or closed the transaction.
+      const outcome = await run(tx)
+      await completed
+      return outcome
+    } catch (error) {
+      try {
+        tx.abort()
+      } catch {
+        // A request may already have aborted or closed the transaction.
+      }
+      await completed.catch(() => {})
+      throw error
     }
-    await completed.catch(() => {})
+  } catch (error) {
     if (error instanceof DOMException && error.name === 'QuotaExceededError') {
       throw new Error('Browser storage is full. Free some space or export a backup before retrying.', { cause: error })
     }
@@ -193,6 +206,7 @@ function referencedAssetIds(projects: CanvasProject[]): Set<string> {
   const ids = new Set<string>()
   for (const project of projects) {
     if (project.coverAssetId) ids.add(project.coverAssetId)
+    if (project.iconAssetId) ids.add(project.iconAssetId)
     for (const object of project.objects) if (object.assetId) ids.add(object.assetId)
   }
   return ids
@@ -213,13 +227,17 @@ async function checkAssetReferences(
   }
 }
 
+function validateAsset(asset: CanvasAsset) {
+  if (!asset.id || !asset.name || asset.size < 0 || !Number.isSafeInteger(asset.size) ||
+      (asset.blob && asset.blob.size !== asset.size) || (asset.blob && asset.handle)) {
+    throw new Error('The selected attachment has invalid metadata.')
+  }
+}
+
 async function storeAssets(tx: IDBTransaction, assets: CanvasAsset[]) {
   const assetStore = tx.objectStore(stores.assets)
   for (const asset of assets) {
-    if (!asset.id || !asset.name || asset.size < 0 || !Number.isSafeInteger(asset.size) ||
-        (asset.blob && asset.blob.size !== asset.size) || (asset.blob && asset.handle)) {
-      throw new Error('The selected attachment has invalid metadata.')
-    }
+    validateAsset(asset)
     // Imported Blobs are immutable; links may be explicitly relinked under the same stable ID.
     const old: CanvasAsset | undefined = await result(assetStore.get(asset.id))
     if (old?.blob) {
@@ -249,6 +267,52 @@ async function writeProjects(tx: IDBTransaction, current: CanvasProject[], chang
 
 export function getProjects(): Promise<CanvasProject[]> {
   return transaction([stores.projects], 'readonly', getAllProjects)
+}
+
+export function getWorkspaceStorageState(): Promise<WorkspaceStorageState> {
+  return transaction(Object.values(stores), 'readonly', async tx => {
+    const [projects, assets, versions, recoveries] = await Promise.all([
+      getAllProjects(tx),
+      result<CanvasAsset[]>(tx.objectStore(stores.assets).getAll()),
+      result<CanvasVersion[]>(tx.objectStore(stores.versions).getAll()),
+      result<CanvasRecovery[]>(tx.objectStore(stores.recoveries).getAll()),
+    ])
+    return { projects, assets, versions, recoveries }
+  })
+}
+
+export function restoreWorkspaceStorageState(
+  snapshot: WorkspaceStorageState,
+  { merge = false }: { merge?: boolean } = {},
+): Promise<void> {
+  const state = structuredClone(snapshot)
+  return transaction(Object.values(stores), 'readwrite', async tx => {
+    if (!merge) {
+      const counts = await Promise.all(Object.values(stores).map(name => result(tx.objectStore(name).count())))
+      if (counts.some(Boolean)) throw new Error('This workspace already contains data. Use an additive restore.')
+    }
+    validateHierarchy(mergeProjects([], state.projects), state.projects)
+    const ids = new Set(state.projects.map(project => project.id))
+    const snapshots = [...state.versions, ...state.recoveries]
+    for (const entry of snapshots) {
+      if (entry.projectId !== entry.project.id || !ids.has(entry.projectId) || !Number.isFinite(entry.createdAt)) {
+        throw new Error('A stored checkpoint does not match a restored canvas.')
+      }
+    }
+    const content = [...state.projects, ...snapshots.map(entry => entry.project), ...state.versions.flatMap(version => version.descendants)]
+    content.forEach(validateProject)
+    const assetIds = new Set(state.assets.map(asset => asset.id))
+    if ([...referencedAssetIds(content)].some(id => !assetIds.has(id))) {
+      throw new Error('The workspace backup is missing an attachment record.')
+    }
+    for (const asset of state.assets) {
+      validateAsset(asset)
+      await result(tx.objectStore(stores.assets).add(asset))
+    }
+    for (const project of state.projects) await result(tx.objectStore(stores.projects).add(project))
+    for (const version of state.versions) await result(tx.objectStore(stores.versions).add(version))
+    for (const recovery of state.recoveries) await result(tx.objectStore(stores.recoveries).add(recovery))
+  })
 }
 
 export function saveProjects(
@@ -334,10 +398,6 @@ async function deleteRecoveries(tx: IDBTransaction, projectId: string) {
   const store = tx.objectStore(stores.recoveries)
   const keys = await result(store.index('projectId').getAllKeys(projectId))
   await Promise.all(keys.map(key => result(store.delete(key))))
-}
-
-export function clearRecoveries(projectId: string): Promise<void> {
-  return transaction([stores.recoveries], 'readwrite', tx => deleteRecoveries(tx, projectId))
 }
 
 function projectTree(projects: CanvasProject[], rootId: string): CanvasProject[] {

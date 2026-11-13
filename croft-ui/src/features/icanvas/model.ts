@@ -17,12 +17,12 @@ export type CanvasSettings = {
   panel: 'properties' | 'layers' | 'closed'
 }
 export type CanvasProject = {
-  id: string; parentId: string | null; name: string; description: string; icon: string; coverAssetId?: string
+  id: string; parentId: string | null; name: string; description: string; icon: string; coverAssetId?: string; iconAssetId?: string
   trashedAt?: number
   createdAt: number; updatedAt: number; camera: Camera; settings: CanvasSettings
   objects: CanvasObject[]; edges: CanvasEdge[]; stops: PresentationStop[]
 }
-export type CanvasAsset = { id: string; name: string; mime: string; size: number; blob?: Blob; handle?: FileSystemFileHandle }
+export type CanvasAsset = { id: string; name: string; mime: string; size: number; blob?: Blob; handle?: FileSystemFileHandle; linked?: boolean }
 export type Placement = 'smart' | 'free'
 
 export const palette = ['#f5e7a5', '#cfe9d8', '#dbe7fa', '#eddcf5', '#f5dcd4', '#f0eee9', '#335e4c']

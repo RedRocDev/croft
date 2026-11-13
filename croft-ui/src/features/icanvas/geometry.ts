@@ -32,9 +32,9 @@ export interface FitOptions extends ZoomLimits {
 
 export type PlacementMode = 'smart' | 'free'
 
-// Zoom is measured in screen pixels per world unit. These limits allow 5–800%.
-export const MIN_ZOOM = 0.05
-export const MAX_ZOOM = 8
+// Zoom is measured in screen pixels per world unit. These limits allow 0.25–6400%.
+export const MIN_ZOOM = 0.0025
+export const MAX_ZOOM = 64
 export const GRID_SPACING = 24
 
 function clampZoom(zoom: number, { min = MIN_ZOOM, max = MAX_ZOOM }: ZoomLimits): number {
@@ -65,6 +65,23 @@ export function zoomAt(viewport: Viewport, cursor: Point, zoom: number, limits: 
     y: cursor.y - anchor.y * nextZoom,
     zoom: nextZoom,
   }
+}
+
+export function pinchViewport(viewport: Viewport, initialCenter: Point, center: Point, ratio: number): Viewport {
+  const zoomed = zoomAt(viewport, initialCenter, viewport.zoom * ratio)
+  return { x: zoomed.x + center.x - initialCenter.x, y: zoomed.y + center.y - initialCenter.y, zoom: zoomed.zoom }
+}
+
+/** Keep compositor coordinates small without changing persisted world coordinates. */
+export function renderOrigin(viewport: Viewport): Point {
+  const topLeft = screenToWorld({ x: 0, y: 0 }, viewport)
+  const localize = (value: number) => Math.abs(value) < 15_000 ? 0 : Math.floor(value / 4096) * 4096
+  return { x: localize(topLeft.x), y: localize(topLeft.y) }
+}
+
+export function gridAtZoom(zoom: number): number {
+  const coarse = Math.max(0, Math.ceil(Math.log(8 / (GRID_SPACING * zoom)) / Math.log(4)))
+  return GRID_SPACING * 4 ** coarse * zoom
 }
 
 export function rectCenter(rect: Rect): Point {
@@ -168,6 +185,81 @@ export function snapPoint(point: Point, spacing = GRID_SPACING): Point {
 
 export function placePoint(point: Point, mode: PlacementMode, spacing = GRID_SPACING): Point {
   return mode === 'smart' ? snapPoint(point, spacing) : point
+}
+
+export function objectSnap(moving: Rect, neighbours: readonly Rect[], tolerance: number): { point: Point; axes: { x: boolean; y: boolean } } {
+  function axis(start: 'x' | 'y', size: 'width' | 'height', across: 'x' | 'y', depth: 'width' | 'height') {
+    let delta = 0
+    let best = tolerance
+    const consider = (proposed: number) => {
+      const change = proposed - moving[start]
+      if (Math.abs(change) < best) { best = Math.abs(change); delta = change }
+    }
+    for (const target of neighbours) {
+      for (const anchor of [target[start], target[start] + target[size] / 2, target[start] + target[size]]) {
+        for (const offset of [0, moving[size] / 2, moving[size]]) consider(anchor - offset)
+      }
+    }
+    const row = neighbours.filter(target => target[across] < moving[across] + moving[depth] && target[across] + target[depth] > moving[across])
+      .sort((a, b) => a[start] - b[start])
+    for (let index = 1; index < row.length; index++) {
+      const left = row[index - 1]
+      const right = row[index]
+      const leftEnd = left[start] + left[size]
+      const gap = right[start] - leftEnd
+      if (gap <= 0) continue
+      consider(left[start] - gap - moving[size])
+      consider(right[start] + right[size] + gap)
+      if (gap >= moving[size]) consider(leftEnd + (gap - moving[size]) / 2)
+    }
+    return { value: moving[start] + delta, snapped: best < tolerance }
+  }
+  const x = axis('x', 'width', 'y', 'height')
+  const y = axis('y', 'height', 'x', 'width')
+  return { point: { x: x.value, y: y.value }, axes: { x: x.snapped, y: y.snapped } }
+}
+
+/** Similarity transforms fit our position/size/rotation model without introducing shear. */
+export function transformDescendant<T extends Rect & { rotation: number; points?: Point[] }>(
+  child: T, before: Rect & { rotation: number }, after: Rect & { rotation: number }, scale: number,
+): T {
+  const origin = rectCenter(before)
+  const target = rectCenter(after)
+  const centre = rectCenter(child)
+  const angle = (after.rotation - before.rotation) * Math.PI / 180
+  const x = (centre.x - origin.x) * scale
+  const y = (centre.y - origin.y) * scale
+  const width = child.width * scale
+  const height = child.height * scale
+  return { ...child, x: target.x + x * Math.cos(angle) - y * Math.sin(angle) - width / 2,
+    y: target.y + x * Math.sin(angle) + y * Math.cos(angle) - height / 2, width, height,
+    rotation: (child.rotation + after.rotation - before.rotation) % 360,
+    points: scale === 1 ? child.points : child.points?.map(point => ({ x: point.x * scale, y: point.y * scale })) }
+}
+
+export function fitFrameAround<T extends Rect & { rotation: number }>(frame: T, child: Rect & { rotation: number }): T {
+  const center = rectCenter(frame)
+  const childCenter = rectCenter(child)
+  const angle = frame.rotation * Math.PI / 180
+  const cos = Math.cos(angle), sin = Math.sin(angle)
+  const dx = childCenter.x - center.x, dy = childCenter.y - center.y
+  const x = dx * cos + dy * sin + frame.width / 2 - child.width / 2
+  const y = -dx * sin + dy * cos + frame.height / 2 - child.height / 2
+  const bounds = rotatedBounds({ ...child, x, y }, child.rotation - frame.rotation)
+  const left = Math.min(0, bounds.left - 24), right = Math.max(frame.width, bounds.right + 24)
+  const top = Math.min(0, bounds.top - 32), bottom = Math.max(frame.height, bounds.bottom + 24)
+  if (left === 0 && right === frame.width && top === 0 && bottom === frame.height) return frame
+  const shiftX = (left + right - frame.width) / 2, shiftY = (top + bottom - frame.height) / 2
+  const width = right - left, height = bottom - top
+  return { ...frame, x: center.x + shiftX * cos - shiftY * sin - width / 2, y: center.y + shiftX * sin + shiftY * cos - height / 2, width, height }
+}
+
+export function containsPoint(rect: Rect & { rotation: number }, point: Point) {
+  const center = rectCenter(rect)
+  const angle = rect.rotation * Math.PI / 180
+  const x = point.x - center.x, y = point.y - center.y
+  return Math.abs(x * Math.cos(angle) + y * Math.sin(angle)) <= rect.width / 2 &&
+    Math.abs(-x * Math.sin(angle) + y * Math.cos(angle)) <= rect.height / 2
 }
 
 export function connectionEndpoints(from: Rect, to: Rect): { from: Point; to: Point } {

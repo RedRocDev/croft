@@ -78,7 +78,7 @@ export function CanvasSaveDialogs({ mode, project, projects, close, flush, write
       ...canvas.objects.flatMap(object => object.assetId ? [object.assetId] : []),
     ])
     let active = true
-    void getAssets(assetIds).then(assets => { if (active) setHasLinkedFile(assets.some(asset => asset.handle)) })
+    void getAssets(assetIds).then(assets => { if (active) setHasLinkedFile(assets.some(asset => asset.handle || asset.linked)) })
       .catch(reason => { if (active) setError(String(reason)) })
     return () => { active = false }
   }, [mode, project, projects])

@@ -8,23 +8,24 @@ import {
 import { ancestors, createProject, descendants, edgeLabels, kinds, makeObject, objectFlags, palette,
   type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
 import {
-  connectionEndpoints, fitViewport, GRID_SPACING, intersects, placePoint, rectCenter, rotatedBounds, screenToWorld, snapPoint, worldToScreen, zoomAt,
+  connectionEndpoints, containsPoint, fitFrameAround, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter, renderOrigin,
+  rotatedBounds, screenToWorld, snapPoint, transformDescendant, worldToScreen, zoomAt,
   type Rect,
 } from './geometry'
 import { CanvasInspector } from './CanvasInspector'
 import { CanvasThumbnail, ObjectContent } from './CanvasVisuals'
-import { CanvasDialog, ProjectDetails } from './ProjectViews'
+import { CanvasDialog, ProjectDetails, ProjectIcon } from './ProjectViews'
 import { CanvasSaveDialogs } from './CanvasSaveDialogs'
+import { CanvasBackupDialog } from './CanvasBackupDialog'
+import { CanvasExportDialog } from './CanvasExportDialog'
 import { droppedCanvasFiles, ImportDialog, pickCanvasFiles, type CanvasFile, type CanvasPreparedAsset } from './ImportDialog'
-import { exportProject, type CanvasExportFormat } from './portability'
-import { getAssets } from './storage'
 import { useCanvasEditing } from './useCanvasEditing'
 import type { useCanvasProjects } from './useCanvasProjects'
 import './canvas.css'
 
 type Tool = 'select' | 'hand' | 'text' | 'note' | 'rectangle' | 'ellipse' | 'stroke' | 'frame' | EdgeKind
 type Popup = 'save' | 'view' | 'tools' | 'add' | 'edges' | 'shapes' | 'project' | 'zoom' | null
-type Modal = 'details' | 'subcanvas' | 'move' | 'trash' | 'find' | 'versions' | 'checkpoint' | 'recovery' | 'copy' | 'export' | 'presentation' | 'embed' | 'link' | 'preview' | null
+type Modal = 'details' | 'subcanvas' | 'move' | 'trash' | 'find' | 'versions' | 'checkpoint' | 'recovery' | 'copy' | 'export' | 'backup' | 'presentation' | 'embed' | 'link' | 'preview' | null
 type Indexed = { minX: number; minY: number; maxX: number; maxY: number; object: CanvasObject; index: number }
 type Gesture = { start: Point; camera: Camera; pointerId: number } & (
   { kind: 'pan' | 'marquee' } | { kind: 'move'; objects: CanvasObject[] } |
@@ -43,12 +44,16 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   jump?: { id: string; event: number }; dark: boolean
 }) {
   const { projects, update, write, flush, refresh, status, error } = store
+  const canEdit = store.access === 'writer'
   const { edit, step, canUndo, canRedo, resetHistory } = useCanvasEditing(project, update)
   const stage = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const toolbar = useRef<HTMLDivElement>(null)
   const pointer = useRef<Point>({ x: 0, y: 0 })
   const gesture = useRef<Gesture | null>(null)
+  const touches = useRef(new Map<number, Point>())
+  const pinch = useRef<{ ids: number[]; center: Point; distance: number; camera: Camera; latest: Camera } | undefined>(undefined)
+  const tappedTool = useRef<{ id: number; position: Point; kind: ObjectKind } | undefined>(undefined)
   const space = useRef(false)
   const [size, setSize] = useState({ width: 0, height: 0 })
   const [tool, setTool] = useState<Tool>('select')
@@ -59,9 +64,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const [modal, setModal] = useState<Modal>(null)
   const [dragged, setDragged] = useState<CanvasObject[]>([])
   const [marquee, setMarquee] = useState<Rect>()
-  const [guides, setGuides] = useState<Point>()
+  const [guides, setGuides] = useState<Partial<Point>>()
   const [drawing, setDrawing] = useState<Point[]>([])
   const [cameraDraft, setCameraDraft] = useState<Camera>()
+  const [readOnlyCamera, setReadOnlyCamera] = useState<Camera>()
+  const [readOnlySettings, setReadOnlySettings] = useState<Partial<CanvasSettings>>({})
   const [toolbarDraft, setToolbarDraft] = useState<Point>()
   const [editing, setEditing] = useState<CanvasObject>()
   const [files, setFiles] = useState<CanvasFile[]>()
@@ -71,10 +78,6 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const [placement, setPlacement] = useState<Placement>(() => {
     try { return localStorage.getItem('croft-icanvas-placement') === 'free' ? 'free' : 'smart' } catch { return 'smart' }
   })
-  const [format, setFormat] = useState<CanvasExportFormat>('croft')
-  const [scope, setScope] = useState<'canvas' | 'selection' | 'project'>('project')
-  const [exportBackground, setExportBackground] = useState<'clean' | 'grid' | 'transparent'>('clean')
-  const [exporting, setExporting] = useState(false)
   const [query, setQuery] = useState('')
   const [findScope, setFindScope] = useState('canvas')
   const [findKind, setFindKind] = useState('')
@@ -87,7 +90,18 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const chain = ancestors(projects, project.id)
   const children = projects.filter(item => item.parentId === project.id)
   const stageProject = play ? projects.find(item => item.id === project.stops[play.index]?.canvasId) ?? project : project
-  const camera = play ? project.stops[play.index]?.camera ?? project.camera : cameraDraft ?? project.camera
+  const viewingCamera = canEdit ? project.camera : readOnlyCamera ?? project.camera
+  const settings = canEdit ? project.settings : { ...project.settings, ...readOnlySettings }
+  const camera = play ? project.stops[play.index]?.camera ?? project.camera : cameraDraft ?? viewingCamera
+  const origin = renderOrigin(camera)
+  const offset = worldToScreen(origin, camera)
+  const gridSize = gridAtZoom(camera.zoom)
+
+  function startPresentation(automatic = false, loop = false, smooth = true) {
+    if (!project.stops.length) return
+    setPlay({ index: 0, automatic, loop, smooth })
+    void stage.current?.parentElement?.requestFullscreen?.().catch(() => {})
+  }
 
   const indexed = useMemo(() => {
     const map = new Map(stageProject.objects.map(object => [object.id, object]))
@@ -108,19 +122,29 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const displayed = new Set(rendered.map(object => object.id))
   for (const object of dragged) if (!displayed.has(object.id) && object.kind !== 'group' && !indexed.flags.get(object.id)?.hidden) rendered.push(object)
   const renderedIds = new Set(rendered.map(object => object.id))
-  const chosen = project.objects.filter(object => selected.includes(object.id) && !indexed.flags.get(object.id)?.hidden)
+  const chosen = selected.flatMap(id => {
+    const object = indexed.map.get(id)
+    return object && !indexed.flags.get(id)?.hidden ? [object] : []
+  })
+  const selectedGroup = canEdit && !play && chosen.length === 1 && chosen[0].kind === 'group' ? dragMap.get(chosen[0].id) ?? chosen[0] : undefined
   const activeEdge = project.edges.find(edge => edge.id === edgeId)
-  const panelOpen = !play && project.settings.panel !== 'closed' && (chosen.length > 0 || !!activeEdge || project.settings.panel === 'layers')
+  const panelOpen = canEdit && !play && settings.panel !== 'closed' && (chosen.length > 0 || !!activeEdge || settings.panel === 'layers')
   const selectedBounds = chosen.map(object => dragMap.get(object.id) ?? object).map(object => rotatedBounds(object, object.rotation))
   const quick = selectedBounds.length ? worldToScreen({
     x: Math.min(...selectedBounds.map(box => box.left)), y: Math.min(...selectedBounds.map(box => box.top)),
   }, camera) : undefined
-  const updateSettings = (patch: Partial<CanvasSettings>) => update({ ...project, settings: { ...project.settings, ...patch } }, false)
-  const setCamera = (next: Camera) => update({ ...project, camera: next }, false)
+  const updateSettings = (patch: Partial<CanvasSettings>) => {
+    if (canEdit) update({ ...project, settings: { ...project.settings, ...patch } }, false)
+    else setReadOnlySettings(previous => ({ ...previous, ...patch }))
+  }
+  const setCamera = (next: Camera) => {
+    if (canEdit) update({ ...project, camera: next }, false)
+    else setReadOnlyCamera(next)
+  }
   const toggle = (next: Popup) => setPopup(current => current === next ? null : next)
   const show = (next: Modal) => { setPopup(null); setModal(next) }
   const onError = (reason: unknown) => setFeedback(reason instanceof Error ? reason.message : String(reason))
-  const validForEdit = (object: CanvasObject) => !indexed.flags.get(object.id)?.hidden && !indexed.flags.get(object.id)?.locked
+  const validForEdit = (object: CanvasObject) => canEdit && !indexed.flags.get(object.id)?.hidden && !indexed.flags.get(object.id)?.locked
 
   useEffect(() => {
     const element = stage.current
@@ -180,34 +204,40 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     setContextPoint(undefined)
   }
 
-  function changeObject(object: CanvasObject, patch: Partial<CanvasObject>) {
-    if (!validForEdit(object) && patch.locked === undefined && patch.hidden === undefined) return
+  function transformObjects(object: CanvasObject, patch: Partial<CanvasObject>): CanvasObject[] {
     const next = { ...object, ...patch }
-    if (object.kind === 'stroke' && object.points && (next.width !== object.width || next.height !== object.height)) {
+    const container = object.kind === 'group' || object.kind === 'frame'
+    const moving = next.x !== object.x || next.y !== object.y
+    const resizing = next.width !== object.width || next.height !== object.height
+    const rotating = next.rotation !== object.rotation
+    const scale = container && resizing ? next.width !== object.width ? next.width / object.width : next.height / object.height : 1
+    if (container && resizing) {
+      next.width = object.width * scale
+      next.height = object.height * scale
+    }
+    if (object.kind === 'stroke' && object.points && resizing) {
       next.points = object.points.map(point => ({ x: point.x * next.width / object.width, y: point.y * next.height / object.height }))
     }
-    const members = object.kind === 'group' || object.kind === 'frame' ? expandSelection([object.id]) : new Set([object.id])
-    const moving = next.x !== object.x || next.y !== object.y
-    const transforming = object.kind === 'group' && (next.rotation !== object.rotation || next.width !== object.width || next.height !== object.height)
-    const pivot = rectCenter(object)
-    const nextPivot = rectCenter(next)
-    const angle = (next.rotation - object.rotation) * Math.PI / 180
-    const sx = next.width / object.width
-    const sy = next.height / object.height
-    edit(project.objects.map(item => {
-      if (item.id === object.id) return next
-      if (!members.has(item.id) || indexed.flags.get(item.id)?.locked) return item
-      if (!transforming) return moving ? { ...item, x: item.x + next.x - object.x, y: item.y + next.y - object.y } : item
-      const centre = rectCenter(item)
-      const x = (centre.x - pivot.x) * sx
-      const y = (centre.y - pivot.y) * sy
-      const width = item.width * sx
-      const height = item.height * sy
-      return { ...item, x: nextPivot.x + x * Math.cos(angle) - y * Math.sin(angle) - width / 2,
-        y: nextPivot.y + x * Math.sin(angle) + y * Math.cos(angle) - height / 2,
-        width, height, rotation: item.rotation + next.rotation - object.rotation,
-        points: item.points?.map(point => ({ x: point.x * sx, y: point.y * sy })) }
-    }))
+    if (!container || !(moving || resizing || rotating)) return [next]
+    const members = expandSelection([object.id])
+    if (!canTransform(members)) return []
+    return [next, ...project.objects.filter(item => item.id !== object.id && members.has(item.id))
+      .map(item => transformDescendant(item, object, next, scale))]
+  }
+
+  function changeObject(object: CanvasObject, patch: Partial<CanvasObject>) {
+    if (!canEdit) return
+    if (!validForEdit(object) && patch.locked === undefined && patch.hidden === undefined) return
+    const next = new Map(transformObjects(object, patch).map(item => [item.id, item]))
+    if (next.size) edit(project.objects.map(item => next.get(item.id) ?? item))
+  }
+
+  function canTransform(ids: Set<string>) {
+    if ([...ids].some(id => indexed.flags.get(id)?.locked)) {
+      setFeedback('Unlock all objects in this selection before transforming it.')
+      return false
+    }
+    return true
   }
 
   function reorder(id: string, direction: 'front' | 'back' | 'forward' | 'backward') {
@@ -260,10 +290,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   function groupSelection() {
     const items = chosen.filter(validForEdit)
     if (items.length < 2 || items.some(item => item.parentId !== items[0].parentId)) return
-    const left = Math.min(...items.map(item => item.x))
-    const top = Math.min(...items.map(item => item.y))
+    const bounds = items.map(item => rotatedBounds(item, item.rotation))
+    const left = Math.min(...bounds.map(item => item.left))
+    const top = Math.min(...bounds.map(item => item.top))
     const group = makeObject('group', { x: left, y: top }, { parentId: items[0].parentId,
-      width: Math.max(...items.map(item => item.x + item.width)) - left, height: Math.max(...items.map(item => item.y + item.height)) - top })
+      width: Math.max(...bounds.map(item => item.right)) - left, height: Math.max(...bounds.map(item => item.bottom)) - top })
     edit([...project.objects.map(item => items.includes(item) ? { ...item, parentId: group.id } : item), group])
     setSelected([group.id])
   }
@@ -279,26 +310,36 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const frame = frameId ? indexed.map.get(frameId) : undefined
     if (!validForEdit(object) || frame?.id === object.parentId) return
     if (frameId && (!frame || frame.kind !== 'frame' || frame.collapsed || !validForEdit(frame) || expandSelection([object.id]).has(frameId))) return
-    edit(project.objects.map(item => {
-      if (item.id === object.id) return { ...item, parentId: frame?.id }
-      if (item.id !== frame?.id) return item
-      const bounds = rotatedBounds(object, object.rotation)
-      const x = Math.min(frame.x, bounds.left - 24)
-      const y = Math.min(frame.y, bounds.top - 32)
-      return { ...frame, x, y, width: Math.max(frame.x + frame.width, bounds.right + 24) - x,
-        height: Math.max(frame.y + frame.height, bounds.bottom + 24) - y }
-    }))
+    const placed = { ...object, parentId: frame?.id }
+    const changes = new Map([[object.id, placed]])
+    growFrames(placed, changes)
+    edit(project.objects.map(item => changes.get(item.id) ?? item))
+  }
+
+  function growFrames(child: CanvasObject, changes: Map<string, CanvasObject>) {
+    const seen = new Set([child.id])
+    while (child.parentId && !seen.has(child.parentId)) {
+      const parent = changes.get(child.parentId) ?? indexed.map.get(child.parentId)
+      if (!parent || indexed.flags.get(parent.id)?.locked) break
+      seen.add(parent.id)
+      child = parent.kind === 'frame' && !parent.collapsed ? fitFrameAround(parent, child) : parent
+      if (child !== parent) changes.set(child.id, child)
+    }
+  }
+
+  function frameAt(point: Point) {
+    return indexed.tree.search({ minX: point.x, minY: point.y, maxX: point.x, maxY: point.y })
+      .sort((a, b) => b.index - a.index)
+      .find(({object}) => object.kind === 'frame' && !object.collapsed && !indexed.flags.get(object.id)?.locked && containsPoint(object, point))?.object
   }
 
   function add(kind: ObjectKind, point = screenToWorld({ x: size.width * .5, y: size.height * .45 }, camera), patch?: Partial<CanvasObject>) {
     const position = project.settings.snapGrid && placement === 'smart' ? placePoint(point, placement) : point
-    const containing = [...indexed.visible].reverse().find(object => object.kind === 'frame' && !object.collapsed &&
-      !indexed.flags.get(object.id)?.locked && intersects(object, { ...position, width: 0, height: 0 }))
+    const containing = frameAt(position)
     const object = makeObject(kind, position, { parentId: containing?.id, ...patch })
-    const records = containing ? project.objects.map(item => item.id === containing.id ? {
-      ...item, width: Math.max(item.width, object.x + object.width - item.x + 24), height: Math.max(item.height, object.y + object.height - item.y + 24),
-    } : item) : project.objects
-    edit([...records, object])
+    const changes = new Map<string, CanvasObject>()
+    growFrames(object, changes)
+    edit([...project.objects.map(item => changes.get(item.id) ?? item), object])
     setSelected([object.id])
     setEdgeId('')
     if (kind === 'text' || kind === 'note') setEditing(object)
@@ -326,8 +367,12 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const world = screenToWorld(screen, camera)
     setPopup(null)
     setContextPoint(undefined)
-    if (event.button === 1 || tool === 'hand' || space.current) {
+    if (event.button === 1 || tool === 'hand' || space.current || event.pointerType === 'touch' && tool === 'select' && !object) {
       gesture.current = { start: screen, camera, kind: 'pan', pointerId: event.pointerId }
+    } else if (!canEdit) {
+      if (object) pick(object.id, event.shiftKey)
+      else setSelected([])
+      return
     } else if (object && tool in edgeLabels) {
       event.stopPropagation()
       connect(object.id)
@@ -337,6 +382,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       setDrawing([world])
     } else if (tool !== 'select') {
       if (['text', 'note', 'rectangle', 'ellipse', 'frame'].includes(tool)) {
+        if (event.pointerType === 'touch') {
+          tappedTool.current = { id: event.pointerId, position: world, kind: tool as ObjectKind }
+          stage.current?.setPointerCapture(event.pointerId)
+          return
+        }
         add(tool as ObjectKind, world)
         setTool('select')
       }
@@ -347,6 +397,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       if (event.shiftKey || !selected.includes(target.id)) pick(target.id, event.shiftKey)
       if (event.shiftKey || !validForEdit(target)) return
       const active = expandSelection(selected.includes(target.id) ? selected : [target.id])
+      if (!canTransform(active)) return
       gesture.current = handle ? { start: screen, camera, kind: handle, object: target, pointerId: event.pointerId } : {
         start: screen, camera, kind: 'move', pointerId: event.pointerId, objects: project.objects.filter(item =>
           active.has(item.id) && !indexed.flags.get(item.id)?.locked),
@@ -361,9 +412,55 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     target?.setPointerCapture(event.pointerId)
   }
 
+  function trackTouch(event: ReactPointerEvent<HTMLDivElement>) {
+    if (play || event.pointerType !== 'touch' || (event.target instanceof Element &&
+      event.target.closest('button, input, video, audio, a, .ic-menu, .ic-inspector-shell, .ic-toolbar, .ic-minimap, .ic-zoom, [data-media-control]'))) return
+    touches.current.set(event.pointerId, localPoint(event))
+    if (touches.current.size < 2) return
+    event.stopPropagation()
+    event.preventDefault()
+    if (pinch.current) return
+    const [[a, first], [b, second]] = [...touches.current]
+    tappedTool.current = undefined
+    finish(false)
+    const center = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 }
+    pinch.current = { ids: [a, b], center, distance: Math.max(1, Math.hypot(first.x - second.x, first.y - second.y)), camera, latest: camera }
+    for (const id of pinch.current.ids) event.currentTarget.setPointerCapture(id)
+  }
+
+  function endPointer(event: ReactPointerEvent<HTMLDivElement>, commit = true) {
+    touches.current.delete(event.pointerId)
+    const activePinch = pinch.current
+    if (activePinch) {
+      if (!activePinch.ids.includes(event.pointerId)) return
+      pinch.current = undefined
+      if (commit) setCamera(activePinch.latest)
+      setCameraDraft(undefined)
+      return
+    }
+    const tap = tappedTool.current
+    if (tap?.id === event.pointerId) {
+      tappedTool.current = undefined
+      if (commit && canEdit) { add(tap.kind, tap.position); setTool('select') }
+      return
+    }
+    if (gesture.current?.pointerId === event.pointerId) finish(commit)
+  }
+
   function move(event: ReactPointerEvent<HTMLDivElement>) {
     const screen = localPoint(event)
     pointer.current = screen
+    if (touches.current.has(event.pointerId)) touches.current.set(event.pointerId, screen)
+    const activePinch = pinch.current
+    if (activePinch) {
+      const [first, second] = activePinch.ids.map(id => touches.current.get(id))
+      if (!first || !second) return
+      const center = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 }
+      activePinch.latest = pinchViewport(activePinch.camera, activePinch.center, center,
+        Math.hypot(first.x - second.x, first.y - second.y) / activePinch.distance)
+      setCameraDraft(activePinch.latest)
+      return
+    }
     const active = gesture.current
     if (!active || active.pointerId !== event.pointerId) return
     const dx = screen.x - active.start.x
@@ -378,47 +475,37 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     if (active.kind === 'rotate') {
       const centre = worldToScreen(rectCenter(active.object), camera)
       const angle = Math.atan2(screen.y - centre.y, screen.x - centre.x) * 180 / Math.PI + 90
-      setDragged([{ ...active.object, rotation: event.shiftKey ? Math.round(angle / 15) * 15 : angle }])
+      setDragged(transformObjects(active.object, { rotation: event.shiftKey ? Math.round(angle / 15) * 15 : angle }))
     }
     if (active.kind === 'resize') {
       const source = active.object
       const radians = -source.rotation * Math.PI / 180
       const localX = delta.x * Math.cos(radians) - delta.y * Math.sin(radians)
       const localY = delta.x * Math.sin(radians) + delta.y * Math.cos(radians)
-      const width = Math.max(24, source.width + localX)
-      const preserve = event.shiftKey || source.kind === 'image' || source.kind === 'video'
-      const height = preserve ? Math.max(24, width * source.height / source.width) : Math.max(24, source.height + localY)
-      setDragged([{ ...source, width, height }])
+      const container = source.kind === 'frame' || source.kind === 'group'
+      const width = Math.max(container ? source.width * .01 : 24, source.width + localX)
+      const preserve = event.shiftKey || ['image', 'video', 'frame', 'group'].includes(source.kind)
+      const height = preserve ? width * source.height / source.width : Math.max(24, source.height + localY)
+      setDragged(transformObjects(source, { width, height }))
     }
     if (active.kind === 'move' && active.objects.length && Math.hypot(dx, dy) > 2) {
       const source = active.objects.find(item => selected.includes(item.id)) ?? active.objects[0]
-      let position = { x: source.x + delta.x, y: source.y + delta.y }
-      if (project.settings.snapGrid && !event.altKey) position = snapPoint(position)
+      const proposed = { x: source.x + delta.x, y: source.y + delta.y }
+      let position = project.settings.snapGrid && !event.altKey ? snapPoint(proposed) : proposed
+      let snapped = { x: position.x !== proposed.x, y: position.y !== proposed.y }
       if (project.settings.snapObjects && !event.altKey) {
         const tolerance = 7 / camera.zoom
-        let closestX = tolerance
-        let closestY = tolerance
-        let shiftX = 0
-        let shiftY = 0
         const moving = new Set(active.objects.map(object => object.id))
-        for (const target of indexed.visible) {
-          if (moving.has(target.id)) continue
-          for (const x of [target.x, target.x + target.width / 2, target.x + target.width]) {
-            for (const offset of [0, source.width / 2, source.width]) {
-              const difference = x - (position.x + offset)
-              if (Math.abs(difference) < closestX) { closestX = Math.abs(difference); shiftX = difference }
-            }
-          }
-          for (const y of [target.y, target.y + target.height / 2, target.y + target.height]) {
-            for (const offset of [0, source.height / 2, source.height]) {
-              const difference = y - (position.y + offset)
-              if (Math.abs(difference) < closestY) { closestY = Math.abs(difference); shiftY = difference }
-            }
-          }
-        }
-        position = { x: position.x + shiftX, y: position.y + shiftY }
+        const reach = Math.max(384, 200 / camera.zoom)
+        const neighbours = indexed.tree.search({ minX: proposed.x - reach, minY: proposed.y - reach,
+          maxX: proposed.x + source.width + reach, maxY: proposed.y + source.height + reach })
+          .map(entry => entry.object).filter(target => !moving.has(target.id))
+        const result = objectSnap({ ...source, ...proposed }, neighbours, tolerance)
+        position = { x: result.axes.x ? result.point.x : position.x, y: result.axes.y ? result.point.y : position.y }
+        snapped = { x: snapped.x || !!result.axes.x, y: snapped.y || !!result.axes.y }
       }
-      setGuides(project.settings.guides ? worldToScreen(position, camera) : undefined)
+      const at = worldToScreen(position, camera)
+      setGuides(project.settings.guides ? { x: snapped.x ? at.x : undefined, y: snapped.y ? at.y : undefined } : undefined)
       setDragged(active.objects.map(item => ({ ...item, x: item.x + position.x - source.x, y: item.y + position.y - source.y })))
     }
   }
@@ -441,8 +528,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     }
     if (commit && dragged.length) {
       const next = new Map(dragged.map(object => [object.id, object]))
-      if (active?.kind === 'resize' || active?.kind === 'rotate') changeObject(active.object, next.get(active.object.id) ?? {})
-      else edit(project.objects.map(object => next.get(object.id) ?? object))
+      edit(project.objects.map(object => next.get(object.id) ?? object))
     }
     setDragged([])
     setMarquee(undefined)
@@ -458,21 +544,26 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       if (play || isEditor(event.target)) return
       event.preventDefault()
       const amount = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY
-      setCamera(zoomAt(project.camera, localPoint(event), project.camera.zoom * Math.exp(-amount * .0018)))
+      setCamera(zoomAt(viewingCamera, localPoint(event), viewingCamera.zoom * Math.exp(-amount * .0018)))
     }
     element.addEventListener('wheel', wheel, { passive: false })
     return () => element.removeEventListener('wheel', wheel)
-  }, [project, play])
+  }, [project, play, viewingCamera, canEdit])
 
   async function saveNow() { await flush(project.id) }
-  function zoom(scale: number) { setCamera(zoomAt(project.camera, { x: size.width / 2, y: size.height / 2 }, scale)) }
+  function zoom(scale: number) { setCamera(zoomAt(viewingCamera, { x: size.width / 2, y: size.height / 2 }, scale)) }
   function fit(selection = false) {
     const objects = selection ? chosen : indexed.visible
     if (objects.length && size.width) setCamera(fitViewport(objects.map(object => object.collapsed ? { ...object, height: 36 } : object), size, { padding: 75 }))
   }
 
   useEffect(() => {
-    const onBlur = () => { space.current = false; if (gesture.current) finish(false) }
+    const onBlur = () => {
+      space.current = false
+      touches.current.clear()
+      tappedTool.current = undefined
+      if (pinch.current || gesture.current) { pinch.current = undefined; finish(false) }
+    }
     function keydown(event: KeyboardEvent) {
       if (event.defaultPrevented || isEditor(event.target) || modal || files || editing || document.querySelector('dialog[open]')) return
       const key = event.key.toLowerCase()
@@ -485,18 +576,19 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         return
       }
       if (event.ctrlKey || event.metaKey) {
-        if (key === 's') { event.preventDefault(); if (event.shiftKey) show('copy'); else void saveNow().catch(onError) }
-        if (key === 'z' || key === 'y') { event.preventDefault(); step(key === 'y' || event.shiftKey ? 'redo' : 'undo') }
+        if (key === 's' && canEdit) { event.preventDefault(); if (event.shiftKey) show('copy'); else void saveNow().catch(onError) }
+        if ((key === 'z' || key === 'y') && canEdit) { event.preventDefault(); step(key === 'y' || event.shiftKey ? 'redo' : 'undo') }
         if (key === 'f') { event.preventDefault(); setQuery(''); setFindScope('canvas'); show('find') }
         return
       }
       if (key === ' ') { event.preventDefault(); space.current = true }
       if (key === 'escape') { setPopup(null); setContextPoint(undefined); setSelected([]); setFromId(''); setEdgeId(''); setTool('select') }
-      if (key === 'delete' || key === 'backspace') { event.preventDefault(); removeSelection() }
-      if (key.startsWith('arrow') && chosen.length) {
+      if (canEdit && (key === 'delete' || key === 'backspace')) { event.preventDefault(); removeSelection() }
+      if (canEdit && key.startsWith('arrow') && chosen.length) {
         event.preventDefault()
         const delta = event.shiftKey ? 10 : 1
         const ids = expandSelection(chosen.filter(validForEdit).map(item => item.id))
+        if (!canTransform(ids)) return
         edit(project.objects.map(item => ids.has(item.id) && !indexed.flags.get(item.id)?.locked ? { ...item,
           x: item.x + (key === 'arrowright' ? delta : key === 'arrowleft' ? -delta : 0), y: item.y + (key === 'arrowdown' ? delta : key === 'arrowup' ? -delta : 0),
         } : item))
@@ -529,12 +621,17 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   }, [play])
 
   async function addFiles(replace = '') {
+    if (!canEdit) return
     setPopup(null)
     setReplaceId(replace)
     try {
-      const chosenFiles = await pickCanvasFiles()
-      if (chosenFiles === undefined) fileInput.current?.click()
-      else if (chosenFiles.length) setFiles(chosenFiles)
+      const chosenFiles = await pickCanvasFiles(!replace)
+      if (chosenFiles === undefined) {
+        if (fileInput.current) {
+          fileInput.current.multiple = !replace
+          fileInput.current.click()
+        }
+      } else if (chosenFiles.length) setFiles(chosenFiles)
     } catch (reason) { onError(reason) }
   }
 
@@ -542,7 +639,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     if (!assets.length) return
     const begin = screenToWorld(pointer.current.x ? pointer.current : { x: size.width * .47, y: size.height * .43 }, camera)
     const origin = placement === 'smart' ? placePoint(begin, placement) : begin
-    const edited = replaceId ? project.objects.map(object => object.id === replaceId ? { ...object, assetId: assets[0].id, name: assets[0].name } : object) : project.objects
+    const edited = replaceId ? project.objects.map(object => object.id === replaceId ? { ...object, assetId: assets[0].id } : object) : project.objects
     const added: CanvasObject[] = []
     if (!replaceId) {
       let index = 0
@@ -565,7 +662,10 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       const replaced = edited.find(object => object.id === replaceId)
       if (assets.length !== 1 || !replaced || shapeForAsset(assets[0]) !== replaced.kind) throw new Error('Choose one matching media file.')
     }
-    await write([{ ...project, objects: [...edited, ...added], updatedAt: Date.now() }], assets)
+    const changes = new Map<string, CanvasObject>()
+    const frame = frameAt(begin)
+    if (frame) for (const object of added) { object.parentId = frame.id; growFrames(object, changes) }
+    await write([{ ...project, objects: [...edited.map(item => changes.get(item.id) ?? item), ...added], updatedAt: Date.now() }], assets)
     setSelected(replaceId ? [replaceId] : added.map(object => object.id))
   }
 
@@ -601,46 +701,48 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const matches = query.trim() ? findProjects.flatMap(canvas => canvas.objects.filter(object => (!findKind || object.kind === findKind) &&
     (object.name + ' ' + object.text + ' ' + (object.caption ?? '')).toLowerCase().includes(query.trim().toLowerCase()))
     .map(object => ({ canvas, object }))).slice(0, 100) : []
-  const activeSettings = stageProject.settings
+  const activeSettings = play ? stageProject.settings : settings
   const menuButtons = (items: ReturnType<typeof action>[]) => items.map(item => <button key={item.label} onClick={item.run}>{item.icon}{item.label}</button>)
   const tools = [{ id: 'select', name: 'Select', icon: MousePointer2 }, { id: 'hand', name: 'Hand', icon: Hand },
     { id: 'text', name: 'Text', icon: Type }, { id: 'note', name: 'Sticky note', icon: StickyNote }, { id: 'stroke', name: 'Draw', icon: PenLine }] as const
   const currentColour = chosen.length === 1 && chosen[0].mode === 'card' ? chosen[0].colour : undefined
-  const showQuick = !!quick && !play && !dragged.length && !marquee && chosen.some(item => renderedIds.has(item.id) || item.kind === 'group')
+  const showQuick = canEdit && !!quick && !play && !dragged.length && !marquee && chosen.some(item => renderedIds.has(item.id) || item.kind === 'group')
 
   return <section className="ic-workspace" data-presentation={!!play}>
     {!play && <header className="ic-header">
       {!sidebarOpen && <button ref={sidebarToggleRef} className="ic-icon" aria-label="Open sidebar" onClick={toggleSidebar}><PanelLeft /></button>}
       <nav className="ic-breadcrumbs" aria-label="Canvas breadcrumbs"><button onClick={goHome}>Home</button>
         {chain.map(item => <span key={item.id}><ChevronRight size={13} /><button title={item.name} aria-current={item.id === project.id ? 'page' : undefined}
-          onClick={() => item.id === project.id ? show('details') : openCanvas(item.id)}>{item.icon} <span>{item.name}</span></button></span>)}
+          onClick={() => item.id === project.id ? canEdit && show('details') : openCanvas(item.id)}><ProjectIcon project={item} /> <span>{item.name}</span></button></span>)}
       </nav>
       <div className="ic-header-actions">
         <button className="ic-icon" title="Undo" aria-label="Undo" disabled={!canUndo} onClick={() => step('undo')}><Undo2 /></button>
         <button className="ic-icon" title="Redo" aria-label="Redo" disabled={!canRedo} onClick={() => step('redo')}><Redo2 /></button>
         <div className="ic-anchor"><button className="ic-button" aria-label="View" aria-expanded={popup === 'view'} onClick={() => toggle('view')}><Eye /> <span>View</span></button>
           {popup === 'view' && <div className="ic-menu ic-menu-right">
-            {(['dots', 'lines', 'none'] as const).map(grid => <button key={grid} aria-pressed={project.settings.grid === grid}
+            {(['dots', 'lines', 'none'] as const).map(grid => <button key={grid} aria-pressed={settings.grid === grid}
               onClick={() => updateSettings({ grid })}>{grid[0].toUpperCase() + grid.slice(1)}</button>)}
             <hr />
-            <label><input type="checkbox" checked={project.settings.minimap} onChange={event => updateSettings({ minimap: event.target.checked })} /> Minimap</label>
-            {(Object.keys(edgeLabels) as EdgeKind[]).map(kind => <label key={kind}><input type="checkbox" checked={project.settings.showEdges[kind]}
-              onChange={event => updateSettings({ showEdges: { ...project.settings.showEdges, [kind]: event.target.checked } })} /> {edgeLabels[kind]}</label>)}
-            <button onClick={() => { updateSettings({ panel: project.settings.panel === 'closed' ? 'layers' : 'closed' }); setPopup(null) }}><Layers /> {project.settings.panel === 'closed' ? 'Show inspector' : 'Hide inspector'}</button>
+            <label><input type="checkbox" checked={settings.minimap} onChange={event => updateSettings({ minimap: event.target.checked })} /> Minimap</label>
+            {(Object.keys(edgeLabels) as EdgeKind[]).map(kind => <label key={kind}><input type="checkbox" checked={settings.showEdges[kind]}
+              onChange={event => updateSettings({ showEdges: { ...settings.showEdges, [kind]: event.target.checked } })} /> {edgeLabels[kind]}</label>)}
+            {canEdit && <button onClick={() => { updateSettings({ panel: settings.panel === 'closed' ? 'layers' : 'closed' }); setPopup(null) }}><Layers /> {settings.panel === 'closed' ? 'Show inspector' : 'Hide inspector'}</button>}
           </div>}
         </div>
-        <button className="ic-icon" aria-label="Presentation" title="Presentation" onClick={() => show('presentation')}><Play /></button>
-        <div className="ic-anchor"><span className="sr-only" role="status">{status}</span><button className="ic-button" aria-label="Save menu" aria-expanded={popup === 'save'} onClick={() => toggle('save')}><Save /> <span>{status}</span><ChevronDown size={12} /></button>
+        {(canEdit || project.stops.length > 0) && <button className="ic-icon" aria-label="Presentation" title="Presentation"
+          onClick={canEdit ? () => show('presentation') : () => startPresentation()}><Play /></button>}
+        {canEdit && <div className="ic-anchor"><span className="sr-only" role="status">{status}</span><button className="ic-button" aria-label="Save menu" aria-expanded={popup === 'save'} onClick={() => toggle('save')}><Save /> <span>{status}</span><ChevronDown size={12} /></button>
           {popup === 'save' && <div className="ic-menu ic-menu-right">{menuButtons([
             action('Save', () => { setPopup(null); void saveNow().catch(onError) }), action('Save VC', () => show('checkpoint')), action('Save As…', () => show('copy')),
           ])}</div>}
-        </div>
+        </div>}
         <div className="ic-anchor"><button className="ic-icon" title="Project menu" aria-label="Project menu" aria-expanded={popup === 'project'} onClick={() => toggle('project')}><MoreHorizontal /></button>
           {popup === 'project' && <div className="ic-menu ic-menu-right">{menuButtons([
-            action('Project Details', () => show('details')), action('Find in canvas', () => show('find'), <Search />),
-            action('Move project…', () => { setMoveTarget(project.parentId ?? ''); show('move') }),
-            action('Move to Trash…', () => show('trash'), <Trash2 />),
-            action('Version History', () => show('versions')), action('Recovery snapshots', () => show('recovery')),
+            ...canEdit ? [action('Project Details', () => show('details')),
+              action('Move project…', () => { setMoveTarget(project.parentId ?? ''); show('move') }),
+              action('Move to Trash…', () => show('trash'), <Trash2 />),
+              action('Version History', () => show('versions')), action('Recovery snapshots', () => show('recovery'))] : [],
+            action('Find in canvas', () => show('find'), <Search />),
             action('Export', () => show('export'), <ArrowDownToLine />),
           ])}</div>}
         </div>
@@ -652,29 +754,30 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       if (picked.length) setFiles(picked)
     }} />
     <div className="ic-stage" ref={stage} role="region" aria-label="Canvas" data-tool={tool} data-dragover={dropActive}
-      style={{ '--ic-grid-size': Math.max(7, GRID_SPACING * camera.zoom) + 'px', '--ic-grid-x': camera.x + 'px', '--ic-grid-y': camera.y + 'px' } as CSSProperties}
-      data-grid={activeSettings.grid} onPointerDown={event => start(event)} onPointerMove={move}
-      onPointerUp={() => finish()} onPointerCancel={() => finish(false)}
-      onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setDropActive(true) } }}
+      style={{ '--ic-grid-size': gridSize + 'px', '--ic-grid-x': camera.x % gridSize + 'px', '--ic-grid-y': camera.y % gridSize + 'px' } as CSSProperties}
+      data-grid={activeSettings.grid} onPointerDownCapture={trackTouch} onPointerDown={event => start(event)} onPointerMove={move}
+      onPointerUp={event => endPointer(event)} onPointerCancel={event => endPointer(event, false)}
+      onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); if (canEdit) setDropActive(true) } }}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropActive(false) }}
       onDrop={event => {
         event.preventDefault()
         setDropActive(false)
-        if (play) return
+        if (play || !canEdit) return
         pointer.current = localPoint(event)
         setReplaceId('')
         void droppedCanvasFiles(event.dataTransfer).then(items => { if (items.length) setFiles(items) }).catch(onError)
       }}>
-      <div className={'ic-world' + (play?.smooth ? ' ic-smooth' : '')} style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
+      <div className={'ic-world' + (play?.smooth && origin.x === 0 && origin.y === 0 ? ' ic-smooth' : '')} style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${camera.zoom})` }}>
         {rendered.map(object => {
           const target = object.targetId ? projects.find(candidate => candidate.id === object.targetId &&
             !ancestors(projects, candidate.id).some(ancestor => ancestor.trashedAt)) : undefined
           const picked = !play && selected.includes(object.id)
           const locked = indexed.flags.get(object.id)?.locked
           const card = object.mode === 'card'
+          const atThumbnailScale = Math.max(object.width, object.height) * camera.zoom < 18 && !picked
           return <div key={object.id} className="ic-item" data-kind={object.kind} data-mode={object.mode} data-selected={picked}
             data-collapsed={!!object.collapsed} data-border={!!object.border} data-from={fromId === object.id}
-            style={{ left: object.x, top: object.y, width: object.width, height: object.collapsed ? 36 : object.height,
+            style={{ left: object.x - origin.x, top: object.y - origin.y, width: object.width, height: object.collapsed ? 36 : object.height,
               transform: `rotate(${object.rotation}deg)`, opacity: object.opacity, '--ic-item-colour': object.colour } as CSSProperties}
             onPointerDown={event => { event.stopPropagation(); start(event, object) }}
             onDoubleClick={event => { event.stopPropagation(); if (!play) openObject(object) }}
@@ -687,14 +790,14 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
                 openObject(object)
               }
             }}
-            onContextMenu={event => { if (!play) { event.preventDefault(); pick(object.id); setContextPoint(localPoint(event)) } }}
+            onContextMenu={event => { if (!play && canEdit) { event.preventDefault(); pick(object.id); setContextPoint(localPoint(event)) } }}
             data-testid={'canvas-object-' + object.id} aria-label={object.name}>
-            {object.kind === 'frame' ? <span className="ic-frame-label"><Box size={14} /> {object.name}{object.collapsed && <small>{project.objects.filter(item => item.parentId === object.id).length} items</small>}</span> : <>
+            {atThumbnailScale ? <div className="ic-item-swatch" /> : object.kind === 'frame' ? <span className="ic-frame-label"><Box size={14} /> {object.name}{object.collapsed && <small>{project.objects.filter(item => item.parentId === object.id).length} items</small>}</span> : <>
               {card && !['canvas', 'page', 'file', 'note'].includes(object.kind) && <span className="ic-object-title">{object.name}</span>}
-              <ObjectContent object={object} target={target} reloadMedia={object.assetId} replace={() => void addFiles(object.id)} />
+              <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit} replace={() => void addFiles(object.id)} />
               {card && object.caption && <small className="ic-caption">{object.caption}</small>}
             </>}
-            {picked && !locked && <>
+            {canEdit && picked && !locked && <>
               <button className="ic-handle ic-resize" tabIndex={-1} aria-label={'Resize ' + object.name}
                 onPointerDown={event => { event.stopPropagation(); start(event, object, 'resize') }} />
               <button className="ic-handle ic-rotate" tabIndex={-1} aria-label={'Rotate ' + object.name}
@@ -702,6 +805,16 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
             </>}
           </div>
         })}
+        {selectedGroup && <div className="ic-item ic-group-outline" data-selected="true"
+          style={{ left: selectedGroup.x - origin.x, top: selectedGroup.y - origin.y, width: selectedGroup.width,
+            height: selectedGroup.height, transform: `rotate(${selectedGroup.rotation}deg)` }}>
+          {validForEdit(selectedGroup) && <>
+            <button className="ic-handle ic-resize" tabIndex={-1} aria-label={'Resize ' + selectedGroup.name}
+              onPointerDown={event => { event.stopPropagation(); start(event, selectedGroup, 'resize') }} />
+            <button className="ic-handle ic-rotate" tabIndex={-1} aria-label={'Rotate ' + selectedGroup.name}
+              onPointerDown={event => { event.stopPropagation(); start(event, selectedGroup, 'rotate') }} />
+          </>}
+        </div>}
         <svg className="ic-edge-layer" width="1" height="1" aria-label="Canvas connections">
           <defs><marker id="ic-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill={colourForEdge.direction} /></marker></defs>
           {stageProject.edges.map(edge => {
@@ -711,7 +824,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
               !intersects({ x: Math.min(from.x, to.x), y: Math.min(from.y, to.y), width: Math.max(from.x + from.width, to.x + to.width) - Math.min(from.x, to.x),
                 height: Math.max(from.y + from.height, to.y + to.height) - Math.min(from.y, to.y) },
               { ...topLeft, width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y })) return null
-            const ends = connectionEndpoints(from, to)
+            const raw = connectionEndpoints(from, to)
+            const ends = { from: { x: raw.from.x - origin.x, y: raw.from.y - origin.y }, to: { x: raw.to.x - origin.x, y: raw.to.y - origin.y } }
             return <g key={edge.id} data-edge-kind={edge.kind} onPointerDown={event => {
               if (!play) { event.stopPropagation(); setEdgeId(edge.id); setSelected([]) }
             }}>
@@ -721,16 +835,17 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
               {edge.label && <text x={(ends.from.x + ends.to.x) / 2} y={(ends.from.y + ends.to.y) / 2 - 7} textAnchor="middle">{edge.label}</text>}
             </g>
           })}
-          {drawing.length > 1 && <polyline points={drawing.map(point => `${point.x},${point.y}`).join(' ')} fill="none" stroke={palette[6]} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
+          {drawing.length > 1 && <polyline points={drawing.map(point => `${point.x - origin.x},${point.y - origin.y}`).join(' ')} fill="none" stroke={palette[6]} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />}
         </svg>
       </div>
       {marquee && <div className="ic-marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
-      {guides && <><div className="ic-guide ic-guide-x" style={{ left: guides.x }} /><div className="ic-guide ic-guide-y" style={{ top: guides.y }} /></>}
+      {guides?.x !== undefined && <div className="ic-guide ic-guide-x" style={{ left: guides.x }} />}
+      {guides?.y !== undefined && <div className="ic-guide ic-guide-y" style={{ top: guides.y }} />}
       {!play && <>
-        {!project.objects.length && !dropActive && <div className="ic-empty"><Layers size={26} /><h2>Start with an idea</h2><p>Drop files here or choose a tool to add something.</p>
+        {canEdit && !project.objects.length && !dropActive && <div className="ic-empty"><Layers size={26} /><h2>Start with an idea</h2><p>Drop files here or choose a tool to add something.</p>
           <button className="ic-button" onPointerDown={event => event.stopPropagation()} onClick={() => void addFiles()}><Plus /> Add files</button></div>}
         {dropActive && <div className="ic-drop-target">Drop files to add them to this canvas</div>}
-        <div className="ic-toolbar" ref={toolbar} data-mode={project.settings.toolbar}
+        {canEdit && <div className="ic-toolbar" ref={toolbar} data-mode={project.settings.toolbar}
           style={project.settings.toolbar === 'floating' ? {
             left: `${(toolbarDraft ?? project.settings.toolbarPoint).x * 100}%`, top: `${(toolbarDraft ?? project.settings.toolbarPoint).y * 100}%`,
           } : undefined} onPointerDown={event => event.stopPropagation()}>
@@ -795,7 +910,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
               }}>{option === 'smart' ? 'Smart placement' : 'Free placement'}</button>)}
             </div>}
           </div>
-        </div>
+        </div>}
         {showQuick && quick && <div className="ic-quick" role="toolbar" aria-label="Selection actions" onPointerDown={event => event.stopPropagation()}
           style={{ left: Math.max(8, Math.min(size.width - 225, quick.x)), top: Math.max(58, quick.y - 42) }}>
           {chosen.length === 1 && <>
@@ -821,10 +936,10 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           <button disabled={!validForEdit(chosen[0])} onClick={() => { reorder(chosen[0].id, 'front'); setContextPoint(undefined) }}>Bring to front</button>
           <button disabled={!validForEdit(chosen[0])} onClick={() => { reorder(chosen[0].id, 'back'); setContextPoint(undefined) }}>Send to back</button>
         </div>}
-        {project.settings.minimap && <Minimap objects={indexed.visible} camera={camera} size={size} onCamera={setCamera} />}
+        {settings.minimap && <Minimap objects={indexed.visible} camera={camera} size={size} onCamera={setCamera} />}
         <div className="ic-zoom" onPointerDown={event => event.stopPropagation()}>
           <button className="ic-icon" aria-label="Zoom out" onClick={() => zoom(camera.zoom / 1.25)}><Minus /></button>
-          <div className="ic-anchor"><button className="ic-button ic-zoom-label" aria-label="Zoom settings" aria-expanded={popup === 'zoom'} onClick={() => toggle('zoom')}>{Math.round(camera.zoom * 100)}%</button>
+          <div className="ic-anchor"><button className="ic-button ic-zoom-label" aria-label="Zoom settings" aria-expanded={popup === 'zoom'} onClick={() => toggle('zoom')}>{camera.zoom < .1 ? +(camera.zoom * 100).toFixed(2) : Math.round(camera.zoom * 100)}%</button>
             {popup === 'zoom' && <div className="ic-menu ic-menu-up ic-menu-right">{menuButtons([
               action('Fit All', () => { fit(); setPopup(null) }), action('Fit Selection', () => { fit(true); setPopup(null) }),
               action('Reset to 100%', () => { zoom(1); setPopup(null) }),
@@ -837,7 +952,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           select={id => pick(id)} update={changeObject} updateEdge={(edge, patch) => edit(project.objects, project.edges.map(item => item.id === edge.id ? { ...item, ...patch } : item))}
           reorder={reorder} moveIntoFrame={moveIntoFrame} settings={updateSettings} /></div>}
         {(feedback || error) && <div className="ic-toast" role="status" onPointerDown={event => event.stopPropagation()}>{feedback || error}
-          {error && <button onClick={() => void flush().catch(onError)}>Retry</button>}<button className="ic-icon" aria-label="Dismiss message" onClick={() => setFeedback('')}><X /></button></div>}
+          {error && canEdit && <><button onClick={() => void flush().catch(onError)}>Retry</button><button onClick={() => show('export')}>Export current draft</button></>}<button className="ic-icon" aria-label="Dismiss message" onClick={() => setFeedback('')}><X /></button></div>}
       </>}
       {play && <div className="ic-player" onPointerDown={event => event.stopPropagation()}>
         <button className="ic-button" onClick={() => changeStop(-1)}>Previous</button>
@@ -847,7 +962,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         <button className="ic-icon" aria-label="Exit presentation" onClick={() => setPlay(undefined)}><X /></button>
       </div>}
     </div>
-    {files && <ImportDialog files={files} close={() => { setFiles(undefined); setReplaceId('') }} onImport={importAssets} />}
+    {canEdit && files && <ImportDialog files={files} relink={!!replaceId} close={() => { setFiles(undefined); setReplaceId('') }} onImport={importAssets} />}
     {modal === 'details' && <ProjectDetails project={project} close={() => setModal(null)} onSave={async (next, assets) => {
       await write([next], assets); setModal(null)
     }} />}
@@ -911,26 +1026,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         <div className="ic-dialog-actions"><button className="ic-button ic-primary" onClick={() => { setModal(null); openObject(preview) }}>Open Full Page</button></div>
       </div>
     </CanvasDialog>}
-    {modal === 'export' && <CanvasDialog title="Export canvas" close={() => { if (!exporting) setModal(null) }}>
-      <div className="ic-form"><label>Format<select value={format} onChange={event => setFormat(event.target.value as CanvasExportFormat)}>
-        {(['croft', 'zip', 'svg', 'png', 'jpg', 'pdf'] as const).map(item => <option key={item} value={item}>{item === 'croft' ? '.croft editable project' : item.toUpperCase()}</option>)}</select></label>
-        <label>Scope<select value={scope} onChange={event => setScope(event.target.value as typeof scope)}><option value="canvas">Current Canvas</option>
-          <option value="project">Include all SubCanvases</option><option value="selection" disabled={!selected.length}>Selected Objects</option></select></label>
-        {!['croft', 'zip'].includes(format) && <label>Background<select value={exportBackground} onChange={event => setExportBackground(event.target.value as typeof exportBackground)}>
-          <option value="clean">Clean</option><option value="grid">Include Canvas Background</option>
-          <option value="transparent" disabled={format !== 'png' && format !== 'svg'}>Transparent</option></select></label>}
-        <p>Packages include imported media. Linked files require re-selection after import.</p>
-        <div className="ic-dialog-actions"><button className="ic-button ic-primary" disabled={exporting} onClick={() => {
-          setExporting(true)
-          const selectedProjects = scope === 'project' ? [project, ...descendants(projects, project.id)] : [project]
-          const ids = new Set(selectedProjects.flatMap(item => [item.coverAssetId, ...item.objects.map(object => object.assetId)]).filter((id): id is string => !!id))
-          void getAssets(ids).then(assets => exportProject(projects, project.id, format, {
-            scope, selectedIds: selected, theme: dark ? 'dark' : 'light', background: exportBackground,
-          }, assets)).then(() => setModal(null)).catch(onError).finally(() => setExporting(false))
-        }}>{exporting ? 'Exporting…' : 'Export'}</button></div>
-        {feedback && <p role="alert">{feedback}</p>}
-      </div>
-    </CanvasDialog>}
+    {modal === 'export' && <CanvasExportDialog close={() => setModal(null)} projects={projects} project={project}
+      selectedIds={selected} dark={dark} openBackup={() => show('backup')} />}
+    {modal === 'backup' && <CanvasBackupDialog close={() => setModal(null)} flush={flush} canRestore={canEdit} />}
     {modal === 'presentation' && <CanvasDialog title="Presentation" close={() => setModal(null)}>
       <div className="ic-form"><label>Stop name<input value={stopName} placeholder="Current view" onChange={event => setStopName(event.target.value)} /></label>
         <div className="ic-row"><label>Seconds<input type="number" min={1} max={120} value={duration}
@@ -959,8 +1057,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           event.preventDefault()
           const values = new FormData(event.currentTarget)
           setModal(null)
-          setPlay({ index: 0, automatic: values.has('automatic'), loop: values.has('loop'), smooth: values.has('smooth') })
-          void stage.current?.parentElement?.requestFullscreen?.().catch(() => {})
+          startPresentation(values.has('automatic'), values.has('loop'), values.has('smooth'))
         }}>
           <label className="ic-inline"><input type="checkbox" name="automatic" /> Automatic</label>
           <label className="ic-inline"><input type="checkbox" name="loop" /> Loop</label>
@@ -1004,15 +1101,15 @@ function Minimap({ objects, camera, size, onCamera }: {
     onCamera({ ...camera, x: size.width / 2 - x * camera.zoom, y: size.height / 2 - y * camera.zoom })
   }
   return <div className="ic-minimap" onPointerDown={event => event.stopPropagation()}>
-    <svg viewBox={`${left} ${upper} ${width} ${height}`} preserveAspectRatio="none" aria-label="Canvas minimap"
+    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-label="Canvas minimap"
       role="button" tabIndex={0} onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); centreAt(event) }}
       onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) centreAt(event) }}
       onKeyDown={event => {
         if (event.key === 'Enter') onCamera(fitViewport(objects, size, { padding: 75 }))
       }}>
-      {local.slice(0, 700).map(item => <rect key={item.id} x={item.x} y={item.y} width={item.width}
+      {local.slice(0, 700).map(item => <rect key={item.id} x={item.x - left} y={item.y - upper} width={item.width}
         height={item.collapsed ? 36 : item.height} rx={3} fill={item.kind === 'text' ? 'var(--muted)' : item.colour} fillOpacity={.7} />)}
-      <rect className="ic-minimap-view" x={top.x} y={top.y} width={Math.max(1, bottom.x - top.x)} height={Math.max(1, bottom.y - top.y)} />
+      <rect className="ic-minimap-view" x={top.x - left} y={top.y - upper} width={Math.max(1, bottom.x - top.x)} height={Math.max(1, bottom.y - top.y)} />
     </svg>
   </div>
 }

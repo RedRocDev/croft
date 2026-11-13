@@ -46,3 +46,6 @@
 .ic-import-dialog .ic-button:not(:disabled):hover { background: var(--hover); }
 .ic-import-dialog .ic-import-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .ic-import-dialog .ic-import-primary:not(:disabled):hover { background: var(--accent); filter: brightness(.94); }
+
+.ic-file-access > div { display: flex; justify-content: center; flex-wrap: wrap; gap: 4px; }
+.ic-file-access button { white-space: nowrap; }

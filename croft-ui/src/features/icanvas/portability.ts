@@ -10,7 +10,7 @@ export type CanvasExportOptions = {
   background?: 'clean' | 'grid' | 'transparent'
 }
 
-type AssetEntry = { id: string; name: string; mime: string; size: number; path?: string; sha256?: string }
+type AssetEntry = { id: string; name: string; mime: string; size: number; path?: string; sha256?: string; linked?: boolean }
 type Manifest = { format: 'croft-icanvas'; version: 1; projects: CanvasProject[]; assets: AssetEntry[] }
 type JsonObject = Record<string, unknown>
 
@@ -66,14 +66,16 @@ function optional<T>(value: unknown, read: (item: unknown) => T): T | undefined 
   return value === undefined ? undefined : read(value)
 }
 
-function readPoint(value: unknown) {
+function readPoint(value: unknown, generous = false) {
   const data = object(value)
-  return { x: number(data.x, -1e12, 1e12), y: number(data.y, -1e12, 1e12) }
+  const bound = generous ? Number.MAX_VALUE : 1e12
+  return { x: number(data.x, -bound, bound), y: number(data.y, -bound, bound) }
 }
 
-function readCamera(value: unknown) {
+function readCamera(value: unknown, generous = false) {
   const data = object(value)
-  return { ...readPoint(data), zoom: number(data.zoom, 0.000001, 1e6) }
+  // Translation is in screen pixels. At high zoom it can exceed the world-coordinate bound.
+  return { ...readPoint(data, true), zoom: number(data.zoom, generous ? Number.MIN_VALUE : 0.000001, generous ? Number.MAX_VALUE : 1e6) }
 }
 
 function readColour(value: unknown) {
@@ -82,18 +84,19 @@ function readColour(value: unknown) {
   return colour
 }
 
-function readObject(value: unknown): CanvasObject {
+function readObject(value: unknown, generous: boolean, maxItems: number): CanvasObject {
   const data = object(value)
+  const bound = generous ? Number.MAX_VALUE : 1e9
   return {
-    id: id(data.id), ...readPoint(data), kind: oneOf(data.kind, objectKinds),
-    width: number(data.width, 0.000001, 1e9), height: number(data.height, 0.000001, 1e9),
-    rotation: number(data.rotation, -1e9, 1e9), opacity: number(data.opacity, 0, 1),
-    hidden: boolean(data.hidden), locked: boolean(data.locked), name: string(data.name), text: string(data.text, 200_000),
+    id: id(data.id), ...readPoint(data, generous), kind: oneOf(data.kind, objectKinds),
+    width: number(data.width, generous ? Number.MIN_VALUE : 0.000001, bound), height: number(data.height, generous ? Number.MIN_VALUE : 0.000001, bound),
+    rotation: number(data.rotation, -bound, bound), opacity: number(data.opacity, 0, 1),
+    hidden: boolean(data.hidden), locked: boolean(data.locked), name: string(data.name, generous ? Infinity : 512), text: string(data.text, generous ? Infinity : 200_000),
     colour: readColour(data.colour), mode: oneOf(data.mode, ['direct', 'card']),
     parentId: optional(data.parentId, id), assetId: optional(data.assetId, id), targetId: optional(data.targetId, id),
-    points: optional(data.points, (points) => list(points, 50_000).map(readPoint)),
+    points: optional(data.points, (points) => list(points, generous ? maxItems : 50_000).map(point => readPoint(point, generous))),
     strokeWidth: optional(data.strokeWidth, (width) => number(width, 0.000001, 1000)),
-    collapsed: optional(data.collapsed, boolean), caption: optional(data.caption, (caption) => string(caption, 16_384)),
+    collapsed: optional(data.collapsed, boolean), caption: optional(data.caption, (caption) => string(caption, generous ? Infinity : 16_384)),
     border: optional(data.border, boolean), referenceOnly: optional(data.referenceOnly, boolean),
   }
 }
@@ -110,21 +113,24 @@ function readSettings(value: unknown): CanvasSettings {
   }
 }
 
-function readProject(value: unknown): CanvasProject {
+export function readProject(value: unknown, workspaceMaxItems?: number): CanvasProject {
   const data = object(value)
+  const workspace = workspaceMaxItems !== undefined
+  const maxItems = workspaceMaxItems ?? limit.objects
   return {
     id: id(data.id), parentId: data.parentId === null ? null : id(data.parentId),
     name: string(data.name), description: string(data.description, 16_384), icon: string(data.icon, 32),
-    coverAssetId: optional(data.coverAssetId, id), createdAt: number(data.createdAt, 0, 8.64e15),
-    updatedAt: number(data.updatedAt, 0, 8.64e15), camera: readCamera(data.camera), settings: readSettings(data.settings),
-    objects: list(data.objects, limit.objects).map(readObject),
-    edges: list(data.edges, limit.objects).map((value) => {
+    coverAssetId: optional(data.coverAssetId, id), iconAssetId: optional(data.iconAssetId, id),
+    trashedAt: optional(data.trashedAt, (value) => number(value, 0, 8.64e15)), createdAt: number(data.createdAt, 0, 8.64e15),
+    updatedAt: number(data.updatedAt, 0, 8.64e15), camera: readCamera(data.camera, workspace), settings: readSettings(data.settings),
+    objects: list(data.objects, maxItems).map(item => readObject(item, workspace, maxItems)),
+    edges: list(data.edges, maxItems).map((value) => {
       const edge = object(value)
-      return { id: id(edge.id), kind: oneOf(edge.kind, ['direction', 'connection', 'relationship']), from: id(edge.from), to: id(edge.to), label: string(edge.label, 4096) }
+      return { id: id(edge.id), kind: oneOf(edge.kind, ['direction', 'connection', 'relationship']), from: id(edge.from), to: id(edge.to), label: string(edge.label, workspace ? Infinity : 4096) }
     }),
-    stops: list(data.stops, 10_000).map((value) => {
+    stops: list(data.stops, workspace ? maxItems : 10_000).map((value) => {
       const stop = object(value)
-      return { id: id(stop.id), name: string(stop.name), canvasId: id(stop.canvasId), camera: readCamera(stop.camera), duration: number(stop.duration, 0, 86400000) }
+      return { id: id(stop.id), name: string(stop.name, workspace ? Infinity : 512), canvasId: id(stop.canvasId), camera: readCamera(stop.camera, workspace), duration: number(stop.duration, 0, 86400000) }
     }),
   }
 }
@@ -140,7 +146,9 @@ function readAsset(value: unknown): AssetEntry {
   requireValue(/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(mime), 'Invalid media type.')
   const name = string(data.name)
   requireValue(name && !/[\\/\u0000-\u001f]/.test(name) && !activeFileName.test(name), 'Unsafe attachment file name.')
-  return { id: id(data.id), name, mime, size, path, sha256 }
+  const linked = optional(data.linked, boolean)
+  requireValue(!linked || path === undefined, 'Linked attachments cannot contain embedded bytes.')
+  return { id: id(data.id), name, mime, size, path, sha256, linked }
 }
 
 function registry<T extends { id: string }>(items: T[]): Map<string, T> {
@@ -169,7 +177,7 @@ function readManifest(bytes: Uint8Array): Manifest {
   requireValue(bytes.byteLength <= limit.manifest, 'Package manifest is too large.')
   const data = object(JSON.parse(decoder.decode(bytes)) as unknown)
   requireValue(data.format === 'croft-icanvas' && data.version === 1, 'Unsupported Croft package format or version.')
-  const projects = list(data.projects, limit.projects).map(readProject)
+  const projects = list(data.projects, limit.projects).map((entry) => readProject(entry))
   const assets = list(data.assets, limit.assets).map(readAsset)
   requireValue(projects.length > 0 && projects.reduce((total, project) => total + project.objects.length, 0) <= limit.objects, 'Package has no canvases or too many objects.')
   const projectMap = registry(projects)
@@ -181,6 +189,7 @@ function readManifest(bytes: Uint8Array): Manifest {
     registry(project.edges)
     registry(project.stops)
     requireValue(!project.coverAssetId || assetMap.has(project.coverAssetId), 'Package references a missing cover asset.')
+    requireValue(!project.iconAssetId || assetMap.has(project.iconAssetId), 'Package references a missing icon asset.')
     for (const item of project.objects) {
       requireValue(!item.assetId || assetMap.has(item.assetId), 'Package references a missing asset.')
       requireValue(item.kind !== 'canvas' || !item.targetId || projectMap.has(item.targetId), 'Package references a missing canvas.')
@@ -260,7 +269,7 @@ function rasterMime(bytes: Uint8Array) {
   return undefined
 }
 
-function safeMime(declared: string, bytes: Uint8Array) {
+export function safeMime(declared: string, bytes: Uint8Array) {
   const prefix = new TextDecoder().decode(bytes.subarray(0, 2048)).replace(/^\uFEFF/, '').trimStart()
   requireValue(!/^(?:<\?xml\b|<!doctype\s+html\b|<html\b|<head\b|<body\b|<svg\b|<script\b|#!)/i.test(prefix) && !(bytes[0] === 77 && bytes[1] === 90), 'Package attachment contains active content.')
   if (declared.startsWith('image/')) return rasterMime(bytes) === declared ? declared : 'application/octet-stream'
@@ -286,7 +295,7 @@ export async function importProject(file: Blob): Promise<{ projects: CanvasProje
     assetIds.set(entry.id, assetId)
     const { name, mime, size } = entry
     if (!entry.path) {
-      assets.push({ id: assetId, name, mime, size })
+      assets.push({ id: assetId, name, mime, size, ...(entry.linked ? { linked: true as const } : {}) })
       continue
     }
     const fileBytes = files.get(entry.path)
@@ -300,6 +309,7 @@ export async function importProject(file: Blob): Promise<{ projects: CanvasProje
     return {
       ...project, id: projectIds.get(project.id)!, parentId: project.parentId ? projectIds.get(project.parentId)! : null,
       coverAssetId: project.coverAssetId ? assetIds.get(project.coverAssetId) : undefined,
+      iconAssetId: project.iconAssetId ? assetIds.get(project.iconAssetId) : undefined,
       objects: project.objects.map((item) => ({
         ...item, id: objectIds.get(item.id)!, parentId: item.parentId ? objectIds.get(item.parentId) : undefined,
         targetId: item.kind === 'canvas' && item.targetId ? projectIds.get(item.targetId) : item.targetId,
@@ -334,6 +344,38 @@ function scopeProjects(projects: readonly CanvasProject[], root: CanvasProject, 
   return [{ ...root, objects: objects.map((item) => ({ ...item, parentId: item.parentId && ids.has(item.parentId) ? item.parentId : undefined })), edges: root.edges.filter((edge) => ids.has(edge.from) && ids.has(edge.to)), stops: [] }]
 }
 
+export function projectExportInventory(projects: readonly CanvasProject[], root: CanvasProject, options: CanvasExportOptions, assets: readonly CanvasAsset[]) {
+  const scoped = scopeProjects(projects, root, options)
+  const scopedIds = new Set(scoped.map(project => project.id))
+  const ids = canvasAssetIds(scoped)
+  const assetsById = new Map(assets.map(asset => [asset.id, asset]))
+  const included = [...ids].flatMap(id => assetsById.get(id)?.blob ? [assetsById.get(id)!] : [])
+  const relink = [...ids].flatMap(id => {
+    const asset = assetsById.get(id)
+    return asset && !asset.blob && (asset.handle || asset.linked) ? [asset] : []
+  })
+  const missing = [...ids].filter(id => {
+    const asset = assetsById.get(id)
+    return !asset?.blob && !asset?.handle && !asset?.linked
+  })
+  const bytes = included.reduce((total, asset) => total + asset.size, 0)
+  const overLimit = included.filter(asset => asset.size > limit.asset)
+  const outside = scoped.flatMap(canvas => canvas.objects.filter(item => item.kind === 'canvas' && item.targetId && !scopedIds.has(item.targetId)))
+  const externalPages = scoped.flatMap(canvas => canvas.objects.filter(item => item.kind === 'page' && item.targetId))
+  return { projectCount: scoped.length, ids, included, relink, missing, bytes, overLimit, outside, externalPages,
+    exceedsPackage: bytes > limit.package - limit.manifest, maxAssetMiB: limit.asset / 1024 ** 2, maxPackageMiB: limit.package / 1024 ** 2 }
+}
+
+export function canvasAssetIds(projects: readonly CanvasProject[]) {
+  const ids = new Set<string>()
+  for (const project of projects) {
+    if (project.coverAssetId) ids.add(project.coverAssetId)
+    if (project.iconAssetId) ids.add(project.iconAssetId)
+    for (const item of project.objects) if (item.assetId) ids.add(item.assetId)
+  }
+  return ids
+}
+
 export async function makeProjectPackage(projects: readonly CanvasProject[], projectId: string, options: CanvasExportOptions = {}, assets: readonly CanvasAsset[] = []) {
   const root = projects.find((entry) => entry.id === projectId)
   requireValue(root, 'Canvas is missing.')
@@ -342,6 +384,7 @@ export async function makeProjectPackage(projects: readonly CanvasProject[], pro
   const assetIds = new Set<string>()
   const portableProjects = scoped.map((project) => {
     if (project.coverAssetId) assetIds.add(project.coverAssetId)
+    if (project.iconAssetId) assetIds.add(project.iconAssetId)
     return {
       ...project, parentId: project.id === root.id ? null : project.parentId,
       objects: project.objects.map((item) => {
@@ -367,7 +410,7 @@ export async function makeProjectPackage(projects: readonly CanvasProject[], pro
       const path = `assets/${String(manifestAssets.length).padStart(5, '0')}.bin`
       files[path] = bytes
       manifestAssets.push({ ...manifestAsset, mime: safeMime(manifestAsset.mime, bytes), size, path, sha256: await hash(bytes) })
-    } else manifestAssets.push(manifestAsset)
+    } else manifestAssets.push({ ...manifestAsset, linked: Boolean(asset?.handle || asset?.linked) || undefined })
   }
   const manifest: Manifest = { format: 'croft-icanvas', version: 1, projects: portableProjects, assets: manifestAssets }
   const raw = encoder.encode(JSON.stringify(manifest, null, 2))
