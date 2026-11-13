@@ -9,7 +9,7 @@ import { ancestors, createProject, descendants, edgeLabels, kinds, makeObject, o
   type Camera, type CanvasAsset, type CanvasEdge, type CanvasObject, type CanvasProject, type CanvasSettings, type EdgeKind, type ObjectKind, type Placement, type Point } from './model'
 import {
   connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, pointerAngle, rectCenter, renderOrigin,
-  rotatedBounds, screenToWorld, snapPoint, snapRotation, transformDescendant, worldToScreen, wrappedAngleDelta, zoomAt,
+  resizeFromCorner, rotatedBounds, screenToWorld, snapPoint, snapRotation, transformDescendant, worldToScreen, wrappedAngleDelta, zoomAt,
   type OrientedRect, type Rect,
 } from './geometry'
 import { CanvasInspector } from './CanvasInspector'
@@ -30,7 +30,7 @@ type Modal = 'details' | 'subcanvas' | 'move' | 'trash' | 'find' | 'versions' | 
 type Indexed = { minX: number; minY: number; maxX: number; maxY: number; object: CanvasObject; index: number }
 type Gesture = { start: Point; camera: Camera; pointerId: number } & (
   { kind: 'pan' | 'marquee' } | { kind: 'move'; objects: CanvasObject[] } |
-  { kind: 'resize'; object: CanvasObject } | { kind: 'stroke'; points: Point[] } |
+  { kind: 'resize'; object: CanvasObject; excluded: Set<string>; preview: CanvasObject[] } | { kind: 'stroke'; points: Point[] } |
   { kind: 'rotate'; object: CanvasObject; center: Point; lastAngle: number; traveled: number; preview: CanvasObject[] })
 const colourForEdge = { direction: '#537e67', connection: '#858783', relationship: '#8266a3' }
 const isEditor = (target: EventTarget | null) => target instanceof HTMLElement &&
@@ -458,11 +458,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     } else if (object) {
       const group = object.parentId ? indexed.map.get(object.parentId) : undefined
       const target = !handle && !event.shiftKey && group?.kind === 'group' ? group : object
-      if (event.shiftKey || !selected.includes(target.id)) pick(target.id, event.shiftKey)
-      if (event.shiftKey || !validForEdit(target)) return
+      if (!handle && (event.shiftKey || !selected.includes(target.id))) pick(target.id, event.shiftKey)
+      if ((!handle && event.shiftKey) || !validForEdit(target)) return
       const active = expandSelection(selected.includes(target.id) ? selected : [target.id])
       if (!canTransform(active)) return
-      gesture.current = handle ? { start: screen, camera, kind: handle, object: target, pointerId: event.pointerId } : {
+      gesture.current = handle ? { start: screen, camera, kind: handle, object: target, excluded: active, preview: [], pointerId: event.pointerId } : {
         start: screen, camera, kind: 'move', pointerId: event.pointerId, objects: project.objects.filter(item =>
           active.has(item.id) && !indexed.flags.get(item.id)?.locked),
       }
@@ -501,6 +501,33 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     setDragged(active.preview)
   }
 
+  function updateResize(active: Extract<Gesture, { kind: 'resize' }>, screen: Point, free: boolean, keepRatio: boolean) {
+    const source = active.object
+    const zoom = active.camera.zoom
+    const movement = { x: (screen.x - active.start.x) / zoom, y: (screen.y - active.start.y) / zoom }
+    const container = source.kind === 'frame' || source.kind === 'group'
+    const minimum = container ? { width: source.width * .01, height: source.height * .01 }
+      : { width: Math.min(source.width, 24), height: Math.min(source.height, 24) }
+    const proportional = keepRatio || container || source.kind === 'image' || source.kind === 'video'
+    const unsnapped = resizeFromCorner(source, movement, minimum, proportional)
+    let result = unsnapped
+    if (!free && project.settings.snapObjects && !source.collapsed && Math.hypot(movement.x, movement.y) * zoom > 1) {
+      const reach = 120 / zoom
+      const bounds = rotatedBounds(unsnapped.rect, source.rotation)
+      const neighbours = indexed.tree.search({ minX: bounds.left - reach, minY: bounds.top - reach,
+        maxX: bounds.right + reach, maxY: bounds.bottom + reach })
+        .filter(({ object }) => !active.excluded.has(object.id))
+        .map(({ minX, minY, maxX, maxY }) => ({ left: minX, top: minY, right: maxX, bottom: maxY }))
+      result = resizeFromCorner(source, movement, minimum, proportional, neighbours, 8 / zoom)
+    }
+    const { rect, guides: snapped } = result
+    setGuides(project.settings.guides ? { x: snapped.x === undefined ? undefined : snapped.x * zoom + active.camera.x,
+      y: snapped.y === undefined ? undefined : snapped.y * zoom + active.camera.y } : undefined)
+    active.preview = Math.max(Math.abs(rect.width - source.width), Math.abs(rect.height - source.height)) < 1e-8
+      ? [] : transformObjects(source, rect)
+    setDragged(active.preview)
+  }
+
   function trackTouch(event: ReactPointerEvent<HTMLDivElement>) {
     if (play || event.pointerType !== 'touch' || (event.target instanceof Element &&
       event.target.closest('button, input, video, audio, a, .ic-menu, .ic-inspector-shell, .ic-toolbar, .ic-minimap, .ic-zoom, [data-media-control]'))) return
@@ -536,6 +563,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     const active = gesture.current
     if (active?.pointerId !== event.pointerId) return
     if (commit && active.kind === 'rotate') updateRotation(active, localPoint(event), event.altKey)
+    if (commit && active.kind === 'resize') updateResize(active, localPoint(event), event.altKey, event.shiftKey)
     finish(commit)
   }
 
@@ -567,17 +595,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     if (active.kind === 'rotate') {
       updateRotation(active, screen, event.altKey)
     }
-    if (active.kind === 'resize') {
-      const source = active.object
-      const radians = -source.rotation * Math.PI / 180
-      const localX = delta.x * Math.cos(radians) - delta.y * Math.sin(radians)
-      const localY = delta.x * Math.sin(radians) + delta.y * Math.cos(radians)
-      const container = source.kind === 'frame' || source.kind === 'group'
-      const width = Math.max(container ? source.width * .01 : 24, source.width + localX)
-      const preserve = event.shiftKey || ['image', 'video', 'frame', 'group'].includes(source.kind)
-      const height = preserve ? width * source.height / source.width : Math.max(24, source.height + localY)
-      setDragged(transformObjects(source, { width, height }))
-    }
+    if (active.kind === 'resize') updateResize(active, screen, event.altKey, event.shiftKey)
     if (active.kind === 'move' && active.objects.length && Math.hypot(dx, dy) > 2) {
       const source = active.objects.find(item => selected.includes(item.id)) ?? active.objects[0]
       const proposed = { x: source.x + delta.x, y: source.y + delta.y }
@@ -616,7 +634,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       add('stroke', { x, y }, { x, y, width: Math.max(...xs) - x + 4, height: Math.max(...ys) - y + 4,
         colour: palette[6], points: active.points.map(point => ({ x: point.x - x, y: point.y - y })), strokeWidth: 3 })
     }
-    const changed = active?.kind === 'rotate' ? active.preview : dragged
+    const changed = active?.kind === 'rotate' || active?.kind === 'resize' ? active.preview : dragged
     if (commit && changed.length) {
       const next = new Map(changed.map(object => [object.id, object]))
       edit(project.objects.map(object => next.get(object.id) ?? object))
@@ -634,7 +652,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     function wheel(event: WheelEvent) {
       if (play || isEditor(event.target)) return
       event.preventDefault()
-      if (gesture.current?.kind === 'rotate') return
+      if (gesture.current?.kind === 'rotate' || gesture.current?.kind === 'resize') return
       const amount = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY
       setCamera(zoomAt(viewingCamera, localPoint(event), viewingCamera.zoom * Math.exp(-amount * .0018)))
     }
@@ -674,7 +692,11 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
         return
       }
       if (key === ' ') { event.preventDefault(); space.current = true }
-      if (key === 'escape' && gesture.current?.kind === 'rotate') { event.preventDefault(); finish(false); return }
+      if (key === 'escape' && (gesture.current?.kind === 'rotate' || gesture.current?.kind === 'resize')) {
+        event.preventDefault()
+        finish(false)
+        return
+      }
       if (key === 'escape' && rotateTarget) { event.preventDefault(); setRotateId(undefined); return }
       if (key === 'escape') { setPopup(null); setContextPoint(undefined); setSelected([]); setFromId(''); setEdgeId(''); setTool('select') }
       if (canEdit && (key === 'delete' || key === 'backspace')) { event.preventDefault(); removeSelection() }

@@ -233,6 +233,68 @@ export function objectSnap(moving: Rect, neighbours: readonly Rect[], tolerance:
   return { point: { x: x.value, y: y.value }, axes: { x: x.snapped, y: y.snapped } }
 }
 
+export function resizeFromCorner(source: OrientedRect, movement: Point, minimum: Size, proportional: boolean,
+  targets: readonly Bounds[] = [], tolerance = 0): { rect: Rect; guides: Partial<Point> } {
+  const angle = (source.rotation % 360) * Math.PI / 180
+  const cos = Math.cos(angle), sin = Math.sin(angle)
+  const toWorld = ({ x, y }: Point) => ({ x: x * cos - y * sin, y: x * sin + y * cos })
+  const toLocal = ({ x, y }: Point) => ({ x: x * cos + y * sin, y: -x * sin + y * cos })
+  const center = rectCenter(source)
+  const diagonal = toWorld({ x: source.width, y: source.height })
+  const anchor = { x: center.x - diagonal.x / 2, y: center.y - diagonal.y / 2 }
+  const delta = toLocal(movement)
+  const minScale = Math.max(minimum.width / source.width, minimum.height / source.height)
+  const length = Math.hypot(source.width, source.height)
+  const scale = Math.max(minScale, 1 + (movement.x * diagonal.x + movement.y * diagonal.y) / length ** 2)
+  let width = proportional ? source.width * scale : Math.max(minimum.width, source.width + delta.x)
+  let height = proportional ? source.height * scale : Math.max(minimum.height, source.height + delta.y)
+  const cornerVector = toWorld({ x: width, y: height })
+  const corner = { x: anchor.x + cornerVector.x, y: anchor.y + cornerVector.y }
+  let snapX: number | undefined, snapY: number | undefined
+  let closestX = tolerance, closestY = tolerance
+  let snappedScale = scale
+  let closestScale = tolerance / length
+
+  for (const target of targets) {
+    for (const axis of ['x', 'y'] as const) {
+      const edges = axis === 'x' ? [target.left, target.right] : [target.top, target.bottom]
+      for (const edge of edges) {
+        const distance = Math.abs(edge - corner[axis])
+        if (proportional) {
+          if (Math.abs(diagonal[axis]) <= 1e-8) continue
+          const next = (edge - anchor[axis]) / diagonal[axis]
+          if (next >= minScale && Math.abs(next - scale) < closestScale) {
+            snappedScale = next
+            closestScale = Math.abs(next - scale)
+            snapX = axis === 'x' ? edge : undefined
+            snapY = axis === 'y' ? edge : undefined
+          }
+        } else if (axis === 'x' && distance < closestX) {
+          snapX = edge
+          closestX = distance
+        } else if (axis === 'y' && distance < closestY) {
+          snapY = edge
+          closestY = distance
+        }
+      }
+    }
+  }
+
+  if (proportional) {
+    width = source.width * snappedScale
+    height = source.height * snappedScale
+  } else if (snapX !== undefined || snapY !== undefined) {
+    const snapped = toLocal({ x: (snapX ?? corner.x) - anchor.x, y: (snapY ?? corner.y) - anchor.y })
+    width = Math.max(minimum.width, snapped.x)
+    height = Math.max(minimum.height, snapped.y)
+  }
+  const endpoint = toWorld({ x: width, y: height })
+  return { rect: { x: anchor.x + (endpoint.x - width) / 2, y: anchor.y + (endpoint.y - height) / 2, width, height }, guides: {
+    x: snapX !== undefined && Math.abs(anchor.x + endpoint.x - snapX) < 1e-6 ? snapX : undefined,
+    y: snapY !== undefined && Math.abs(anchor.y + endpoint.y - snapY) < 1e-6 ? snapY : undefined,
+  } }
+}
+
 /** Similarity transforms fit our position/size/rotation model without introducing shear. */
 export function transformDescendant<T extends Rect & { rotation: number; points?: Point[] }>(
   child: T, before: Rect & { rotation: number }, after: Rect & { rotation: number }, scale: number,

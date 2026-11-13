@@ -2,13 +2,44 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   MAX_ZOOM, MIN_ZOOM, connectionEndpoints, containsPoint, fitFrameAround, fitFrameToContents, fitViewport, gridAtZoom, intersects, objectSnap, pinchViewport, placePoint, rectCenter,
-  renderOrigin, rotatedBounds, screenToWorld, snapPoint, snapRotation, transformDescendant, visibleInViewport, worldToScreen, wrappedAngleDelta, zoomAt,
+  renderOrigin, resizeFromCorner, rotatedBounds, screenToWorld, snapPoint, snapRotation, transformDescendant, visibleInViewport, worldToScreen, wrappedAngleDelta, zoomAt,
 } from '../src/features/icanvas/geometry.ts'
 
 const closeTo = (actual, expected) => assert.ok(
   Math.abs(actual - expected) < 1e-9,
   `Expected ${actual} to be close to ${expected}`,
 )
+
+test('corner resize aligns both edges within tolerance and keeps the opposite corner fixed', () => {
+  const source = { x: 20, y: 100, width: 160, height: 40, rotation: 0 }
+  const minimum = { width: 24, height: 24 }
+  const targets = [{ left: 20, top: 10, right: 220, bottom: 90 }, { left: 235, top: 100, right: 330, bottom: 170 }]
+  const snapped = resizeFromCorner(source, { x: 43, y: 27 }, minimum, false, targets, 8)
+  assert.deepEqual(snapped.rect, { x: 20, y: 100, width: 200, height: 70 })
+  assert.deepEqual(snapped.guides, { x: 220, y: 170 })
+  const outOfRange = resizeFromCorner(source, { x: 27, y: 20 }, minimum, false, targets, 8)
+  assert.deepEqual(outOfRange.rect, { x: 20, y: 100, width: 187, height: 60 })
+  assert.deepEqual(outOfRange.guides, { x: undefined, y: undefined })
+})
+
+test('proportional corner resize snaps a side without changing the aspect ratio', () => {
+  const source = { x: 40, y: 30, width: 80, height: 40, rotation: 0 }
+  const targets = [{ left: 20, top: -100, right: 160, bottom: 0 }]
+  const result = resizeFromCorner(source, { x: 43, y: 21.5 }, { width: 24, height: 24 }, true, targets, 8)
+  assert.deepEqual(result.rect, { x: 40, y: 30, width: 120, height: 60 })
+  assert.equal(result.guides.x, 160)
+})
+
+test('resizing a rotated card keeps its visual opposite corner anchored', () => {
+  const source = { x: 0, y: 0, width: 100, height: 50, rotation: 90 }
+  const result = resizeFromCorner(source, { x: 0, y: 20 }, { width: 24, height: 24 }, false,
+    [{ left: 10, top: -40, right: 90, bottom: 92 }], 8)
+  closeTo(result.rect.width, 117)
+  closeTo(result.rect.height, 50)
+  closeTo(result.rect.x, -8.5)
+  closeTo(result.rect.y, 8.5)
+  assert.equal(result.guides.y, 92)
+})
 
 test('manual rotation crosses the angle boundary continuously and snaps to the chosen increment', () => {
   assert.equal(wrappedAngleDelta(175, -170), 15)
