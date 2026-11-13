@@ -1,0 +1,26 @@
+# iCanvas interface references
+
+13 November 2026. Live read-only Mobbin searches returned desktop web previews. The observations below come from inspecting the images. Screenshots and example content are reference material. The Croft logo, tokens, and synthetic board content supply the application artwork and labels.
+
+## Canvas and controls
+
+| Reference | What is visible | iCanvas mapping |
+| --- | --- | --- |
+| Miro board | A faint grid extends into open space around framed content, cards and notes. The board title sits in a short row. Creation tools are a small left dock, and zoom commands have their own lower-right cluster. [Miro board](https://mobbin.com/screens/7a7c30a3-3e9c-4cd6-89d7-58176bc58bcf) | Use a quiet dotted surface, keep the header brief, and anchor zoom away from object creation. |
+| Confluence whiteboard | An indented content tree stays on the left of a dotted canvas. A short wide tool palette floats near the bottom. The zoom controls sit separately on the right. [Confluence whiteboard](https://mobbin.com/screens/726686b9-7d41-41f2-991b-012227aa5f42) | Make tools available in a horizontal palette while keeping the project hierarchy in Croft's existing shell. Collapse Croft's sidebar on entering the canvas and restore the prior state on leaving, as specified. |
+| Zoom whiteboard | The active tool has a strong filled state. Its settings open beside the narrow dock. The canvas and lower-right zoom cluster remain visible. [Zoom drawing mode](https://mobbin.com/screens/f939a6ad-b1d7-4eba-a4eb-c3595b0ec6cb) | Keep tool options near their trigger. Distinguish the current tool from the keyboard focus indicator. |
+| Miro selection | Selected items retain their own outlines within a shared boundary. Handles mark the group boundary, and a tool strip sits above the selection. A tag popover opens from that strip. [Sticky-note multi-selection](https://mobbin.com/screens/7e89aa52-1d76-4de6-aef9-4ac9ffb2c6f4) · [Selected object and style popover](https://mobbin.com/screens/94fe5620-7ea9-4320-b42d-e2d47b690f7e) | Keep quick actions near the selected objects and leave persistent fields in the right panel. Clear the quick actions on deselection. Test viewport-aware placement when the selection is near an edge. |
+| Miro board settings | A View submenu separates grid style choices from the Snap to grid switch. The board content stays on screen while settings are open. [Miro grid options](https://mobbin.com/screens/afb64d40-4383-4121-880a-f4702764466d) | Represent None, Lines, and Dots as one choice, and keep snapping and guide toggles independent. Use the iCanvas defaults from the directive. |
+| Figma inspector | The selected element has a clear outline on the canvas and a tinted row in the tree. The compact right inspector groups position and dimensions. The toolbar stays outside the right panel. [Figma selection and inspector](https://mobbin.com/screens/b62f7a88-50de-4ef0-bd2f-a238d83dd36a) | Link canvas selection with Properties and Layers. Group geometry fields and keep panels dismissible to recover drawing space. |
+
+## Home and hierarchy
+
+- Miro's Home shows creation choices before the existing boards. Each existing entry pairs a thumbnail and title with modified information. Croft's Home uses its own project cards with type icon, thumbnail, name and last-edited metadata, with New Project leading to Canvas as a type. [Miro Home](https://mobbin.com/screens/a64d709e-cb59-46b2-a2ca-2ab93465b625)
+- Air places board rows under a collapsible heading. A row menu opens alongside its trigger and includes adding a sub-board. Figma uses indentation, type icons and a selected-row tint to distinguish each level. Use those cues for Croft's separate project hierarchy and keep the five existing utility items in their own group. [Air board navigation](https://mobbin.com/screens/58ee5380-f114-4fff-94d7-5045148dfcb5) · [Figma nested Layers](https://mobbin.com/screens/b62f7a88-50de-4ef0-bd2f-a238d83dd36a)
+- The earlier Notion research records the compact shell, a title bar, and the workspace search overlay. Reuse Croft's existing shell and search dialog when adding canvas results. A result, project row, and breadcrumb that name the same canvas should resolve to the same project state. [Notion workspace](https://mobbin.com/screens/f13ba85e-b673-4583-a5a6-164a0b7228ab) · [Notion search](https://mobbin.com/screens/b1273bdd-d65d-44be-a422-ffc0f601bacd) · [Earlier Croft references](../REFERENCES.md)
+
+## Behaviour to verify in Croft
+
+The searches for a visible minimap returned a grid menu and a zoomed-out canvas. A bottom-left minimap shown by default comes from the iCanvas directive. The directive also supplies the movable palette, parked mode, zoom anchoring, independent edge visibility, sidebar restoration, nested project breadcrumbs, and the responsive properties drawer. Test those interactions in the browser. Include keyboard focus, persistence of per-project canvas state, and the panel and zoom placement at 1440, 1024, 768 and 390 px. [Miro zoomed-out board](https://mobbin.com/screens/962cbc3a-dee1-4542-84ea-fd0f6a14aba8)
+
+The FigJam and Milanote queries returned other products. This page attributes patterns to the products whose images were inspected. The Notion workspace preview shows the sidebar but gives no visual evidence for a deeply nested canvas hierarchy.

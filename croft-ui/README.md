@@ -1,6 +1,6 @@
 # Croft — Space to grow.
 
-Croft is a localhost UI prototype with a branded Home and five sidebar items: Search, Home, Inbox, Settings and Trash. The sample handbook, nested pages and Projects layouts are accessible from Home or mock Search.
+Croft is a localhost workspace for iCanvas projects. Home and the five sidebar utilities remain available alongside the project hierarchy. The original sample handbook and database layouts are accessible from Home and Search.
 
 ## Run locally
 
@@ -16,6 +16,7 @@ Open [http://localhost:5173](http://localhost:5173). Vite binds to localhost and
 
 ```sh
 npm run check
+npm test
 npm run build
 npm run preview
 ```
@@ -24,11 +25,15 @@ The production build goes to `dist/`. The project uses the published WebAssembly
 
 ## Explore
 
+- Open **Holiday Ideas** on Home to try iCanvas, or choose **New Project** to start a blank canvas. Double-click a SubCanvas tile to open it. The header breadcrumbs lead back through its parents.
+- Add notes, shapes, drawings and local files. Use the Properties and Layers tabs to edit objects, or **Add → New SubCanvas** to create child projects. Hold Space and drag to pan. Use **View** for the grid, minimap, edge visibility and inspector.
+- Use `Ctrl+K` for workspace Search and `Ctrl+F` to find canvas objects. `Ctrl+S` saves the current canvas. The Save menu also has **Save VC** for versions and **Save As** for a separate project copy.
+- Use **Project menu → Export** for an editable `.croft` or `.zip` backup, or for SVG, PNG, JPG and PDF output. Home can reimport editable packages as distinct projects.
 - Open the handbook from Recently visited on Home. Its sample links open the nested pages.
 - In the handbook, click the sample sentence “Write down what changed and why.” for the formatting toolbar, or press `/` for the slash menu. The page options menu also opens both previews.
 - Open Projects from Home to switch views and preview records. Calendar navigation, filters, sorting and query previews use the same in-memory sample data.
-- Press `Ctrl+K` to open workspace Search. Use Settings → Preferences → Appearance for light, dark and system views.
+- Use Settings → Preferences → Appearance for light, dark and system views.
 
-Page content, settings examples, sharing, and templates are mock states. The prototype has no backend, storage, sign-in, real document editing, or synchronization. Theme and other preview selections reset when the page reloads.
+iCanvas saves projects and imported media in this browser profile’s IndexedDB at `http://localhost:5173`. Other ports and browser profiles have separate storage. Keep `.croft` backups for work you need to retain if browser site data is cleared. File links depend on browser support and a user-granted file handle. Handbook and database examples, sharing, and template controls remain UI fixtures. Theme preview resets when the page reloads.
 
-See [Mobbin references](REFERENCES.md) and [screenshots](screenshots/). Croft uses the unchanged original C logo and its padded display derivative. The cover is original generated workspace artwork, bundled locally.
+See the [iCanvas feature matrix](docs/ICANVAS_FEATURE_MATRIX.md), [verification record](docs/ICANVAS_QA.md), and [Mobbin references](docs/ICANVAS_REFERENCES.md). Croft uses the original C logo and its padded display derivative. The cover is original generated workspace artwork, bundled locally.
