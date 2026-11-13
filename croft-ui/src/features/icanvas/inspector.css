@@ -1,0 +1,246 @@
+.ic-inspector {
+  display: flex;
+  flex: 0 0 248px;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.ic-inspector-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 7px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ic-inspector button {
+  border-radius: 5px;
+  color: var(--muted);
+}
+
+.ic-inspector button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.ic-inspector button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.ic-inspector-tabs > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+  white-space: nowrap;
+}
+
+.ic-inspector-tabs > button[aria-pressed="true"],
+.ic-inspector-layer-name[aria-pressed="true"] {
+  color: var(--ink);
+  background: var(--hover);
+  font-weight: 650;
+}
+
+.ic-inspector svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ic-inspector-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+
+.ic-inspector-tabs > .ic-inspector-close {
+  display: inline-grid;
+  margin-left: auto;
+  padding: 0;
+}
+
+.ic-inspector-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 14px;
+}
+
+.ic-inspector-status {
+  margin: 8px 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.ic-inspector-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 2px 0 10px;
+}
+
+.ic-inspector-summary > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.ic-inspector-summary h3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.ic-inspector-summary p,
+.ic-inspector-field > span {
+  color: var(--muted);
+}
+
+.ic-inspector-section {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  padding: 5px 0 12px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ic-inspector-section:last-child {
+  border-bottom: 0;
+}
+
+.ic-inspector-section:disabled {
+  opacity: .65;
+}
+
+.ic-inspector-section legend {
+  padding: 0 0 3px;
+  font-weight: 650;
+}
+
+.ic-inspector-numbers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.ic-inspector-field {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.ic-inspector-field input,
+.ic-inspector-field textarea,
+.ic-inspector-field select {
+  min-width: 0;
+  width: 100%;
+  min-height: 27px;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.ic-inspector-field textarea {
+  resize: vertical;
+}
+
+.ic-inspector-check {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 5px;
+}
+
+.ic-inspector-check input {
+  accent-color: var(--accent);
+}
+
+.ic-inspector-palette,
+.ic-inspector-order {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.ic-inspector-swatch {
+  width: 20px;
+  height: 20px;
+  border: 1px solid #0002;
+}
+
+.ic-inspector-swatch[aria-pressed="true"] {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.ic-inspector .ic-inspector-swatch:hover:not(:disabled) {
+  background: revert-layer;
+  outline: 1px solid var(--muted);
+  outline-offset: 1px;
+}
+
+.ic-inspector-order button {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  min-width: 26px;
+  height: 27px;
+  border: 1px solid var(--border);
+}
+
+.ic-inspector-layers {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.ic-inspector-layers .ic-inspector-layers {
+  margin-left: 8px;
+  padding-left: 5px;
+  border-left: 1px solid var(--border);
+}
+
+.ic-inspector-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 2px;
+}
+
+.ic-inspector-layer-row[data-hidden="true"] .ic-inspector-layer-name {
+  opacity: .65;
+}
+
+.ic-inspector-layer-spacer {
+  width: 24px;
+  flex: none;
+}
+
+.ic-inspector-layer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 4px 3px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 880px) {
+  .ic-inspector {
+    flex-basis: 202px;
+  }
+}

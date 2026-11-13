@@ -7,6 +7,10 @@ import {
   Search, Settings, Settings2, Star, Sun, Table2, Trash2, Type, Underline, X,
 } from 'lucide-react'
 import { Database, type DatabaseView } from './Database'
+import { CanvasWorkspace } from './features/icanvas/CanvasWorkspace'
+import { CanvasDialog, ProjectCards, ProjectTree, ProjectDetails } from './features/icanvas/ProjectViews'
+import { ancestors, createProject, type CanvasProject } from './features/icanvas/model'
+import { useCanvasProjects } from './features/icanvas/useCanvasProjects'
 
 type Page = 'home' | 'handbook' | 'weekly' | 'meeting' | 'projects'
 type Overlay = 'search' | 'inbox' | 'settings' | 'archive' | 'about' | 'new' | null
@@ -40,6 +44,7 @@ function route() {
   return {
     page: pageIds.includes(id as Page) ? id as Page : 'home' as Page,
     view: (views.includes(tab) ? tab : 'table') as DatabaseView,
+    canvasId: id === 'canvas' ? tab || '' : '',
   }
 }
 
@@ -68,7 +73,7 @@ function Modal({ className = '', label, close, children }: { className?: string;
   )
 }
 
-function Home({ go }: { go: (page: Page) => void }) {
+function Home({ go, children }: { go: (page: Page) => void; children?: ReactNode }) {
   return (
     <article className="home" aria-labelledby="home-heading">
       <header className="home-title">
@@ -76,6 +81,7 @@ function Home({ go }: { go: (page: Page) => void }) {
         <h1 id="home-heading">Croft</h1>
         <p>Space to grow.</p>
       </header>
+      {children}
       <section className="home-section" aria-labelledby="home-recent">
         <h2 id="home-recent">Recently visited</h2>
         <ul className="recent-list">
@@ -177,10 +183,34 @@ function Document({ page, go, editorState, setEditorState }: {
   )
 }
 
-function SearchModal({ close, go }: { close: () => void; go: (page: Page) => void }) {
+function SearchModal({ close, go, projects, openCanvas }: {
+  close: () => void; go: (page: Page) => void; projects: CanvasProject[]
+  openCanvas: (id: string, objectId?: string) => void
+}) {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
-  const options = (query.trim() ? pageIds : recent.map(item => item.id)).filter(id => pages[id].name.toLowerCase().includes(query.trim().toLowerCase()))
+  const term = query.trim().toLowerCase()
+  const options: { id: string; title: string; location: string; icon: ReactNode; description: string; open: () => void }[] =
+    (term ? pageIds : recent.map(item => item.id)).filter(id => pages[id].name.toLowerCase().includes(term)).map(id => ({
+    id, title: pages[id].name, location: pages[id].location,
+    icon: <PageIcon id={id} tile />, description: quickPages.find(entry => entry.id === id)?.description || 'Notes and decisions from the studio.',
+    open: () => go(id),
+  }))
+  if (term) for (const project of projects) {
+    if ((project.name + ' ' + project.description).toLowerCase().includes(term)) options.push({
+      id: project.id, title: project.name, location: 'iCanvas', description: project.description,
+      icon: <span className="page-icon tile sage">{project.icon}</span>, open: () => openCanvas(project.id),
+    })
+    for (const object of project.objects) {
+      if (!(object.name + ' ' + object.text + ' ' + (object.caption ?? '')).toLowerCase().includes(term)) continue
+      options.push({
+        id: object.id, title: object.name, location: project.name, description: object.text,
+        icon: <span className="page-icon tile sage"><FileText /></span>, open: () => openCanvas(project.id, object.id),
+      })
+      if (options.length >= 60) break
+    }
+    if (options.length >= 60) break
+  }
   const item = options[selected]
   return <Modal className="search-modal" label="Search workspace" close={close}>
     <div className="search-modal-top">
@@ -192,7 +222,7 @@ function SearchModal({ close, go }: { close: () => void; go: (page: Page) => voi
             e.preventDefault()
             setSelected(last => Math.max(0, Math.min(options.length - 1, last + (e.key === 'ArrowDown' ? 1 : -1))))
           }
-          if (e.key === 'Enter' && item) go(item)
+          if (e.key === 'Enter' && item) item.open()
         }} />
       <button className="icon-button" onClick={close} aria-label="Close search"><X /></button>
     </div>
@@ -200,13 +230,13 @@ function SearchModal({ close, go }: { close: () => void; go: (page: Page) => voi
     <div className="search-columns">
       <div className="search-results">
         <h2>{query ? 'Results' : 'Recently visited'}</h2>
-        {options.map((id, index) => <button key={id} data-active={index === selected} onMouseEnter={() => setSelected(index)} onClick={() => go(id)}>
-          <PageIcon id={id} tile /><span><strong>{pages[id].name}</strong><small>{pages[id].location}</small></span><ArrowUpRight />
+        {options.map((result, index) => <button key={result.id} data-active={index === selected} onMouseEnter={() => setSelected(index)} onClick={result.open}>
+          {result.icon}<span><strong>{result.title}</strong><small>{result.location}</small></span><ArrowUpRight />
         </button>)}
         {!options.length && <p>No pages match this search.</p>}
       </div>
       <div className="search-preview">{item && <>
-        <PageIcon id={item} tile /><h2>{pages[item].name}</h2><p>{quickPages.find(entry => entry.id === item)?.description || 'Notes and decisions from the studio.'}</p>
+        {item.icon}<h2>{item.title}</h2><p>{item.description}</p>
         <span className="paper-line" /><span className="paper-line short" /><span className="paper-line" />
       </>}</div>
     </div>
@@ -281,6 +311,9 @@ function EmptyDialog({ label, message, icon: Icon, close }: {
 }
 
 export function App() {
+  const canvases = useCanvasProjects()
+  const [draftCanvas, setDraftCanvas] = useState<CanvasProject | null>(null)
+  const [jump, setJump] = useState<{ id: string; event: number }>()
   const [current, setCurrent] = useState(route)
   const [overlay, setOverlay] = useState<Overlay>(null)
   const [menu, setMenu] = useState<'page' | 'share' | null>(null)
@@ -292,17 +325,39 @@ export function App() {
   const focusSidebarToggle = useRef(false)
   const [editorState, setEditorState] = useState<'slash' | 'format' | null>(null)
   const [starred, setStarred] = useState<Page[]>(['handbook', 'projects'])
-  const { page, view } = current
+  const { page, view, canvasId } = current
+  const activeCanvases = canvases.projects.filter(project => !ancestors(canvases.projects, project.id).some(item => item.trashedAt))
+  const canvas = activeCanvases.find(project => project.id === canvasId)
+  const trashedCanvases = canvases.projects.filter(project => project.trashedAt)
+  const sidebarBeforeCanvas = useRef<boolean | null>(null)
   const dark = theme === 'dark' || theme === 'system' && systemDark
 
   function go(next: Page, databaseView: DatabaseView = 'table') {
     location.hash = next === 'projects' ? 'projects/' + databaseView : next
-    setCurrent({ page: next, view: databaseView })
+    setCurrent({ page: next, view: databaseView, canvasId: '' })
     setOverlay(null)
     setMenu(null)
     setEditorState(null)
     if (innerWidth < 800) setSidebar(false)
   }
+
+  function openCanvas(id: string, objectId?: string) {
+    setJump(objectId ? { id: objectId, event: Date.now() } : undefined)
+    location.hash = 'canvas/' + id
+    setCurrent({ page: 'home', view: 'table', canvasId: id })
+    setOverlay(null)
+    setMenu(null)
+  }
+
+  useEffect(() => {
+    if (canvasId && sidebarBeforeCanvas.current === null) {
+      sidebarBeforeCanvas.current = sidebar
+      setSidebar(false)
+    } else if (!canvasId && sidebarBeforeCanvas.current !== null) {
+      setSidebar(sidebarBeforeCanvas.current)
+      sidebarBeforeCanvas.current = null
+    }
+  }, [canvasId, sidebar])
 
   useEffect(() => {
     const media = matchMedia('(prefers-color-scheme: dark)')
@@ -321,7 +376,7 @@ export function App() {
   }, [sidebar])
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && ['k', 'p'].includes(event.key.toLowerCase())) {
+      if (!event.defaultPrevented && (event.ctrlKey || event.metaKey) && ['k', 'p'].includes(event.key.toLowerCase()) && !(event.target instanceof HTMLTextAreaElement)) {
         event.preventDefault()
         setMenu(null)
         setOverlay('search')
@@ -330,7 +385,7 @@ export function App() {
         event.preventDefault()
         setTheme(dark ? 'light' : 'dark')
       }
-      if (event.key === '/' && !overlay && page !== 'projects' && page !== 'home' && !(event.target instanceof HTMLInputElement)) {
+      if (event.key === '/' && !canvasId && !overlay && page !== 'projects' && page !== 'home' && !(event.target instanceof HTMLInputElement)) {
         event.preventDefault()
         setEditorState('slash')
         document.querySelector('.mock-block')?.scrollIntoView({ block: 'nearest' })
@@ -339,7 +394,7 @@ export function App() {
     }
     addEventListener('keydown', keydown)
     return () => removeEventListener('keydown', keydown)
-  }, [overlay, page, dark])
+  }, [overlay, page, dark, canvasId])
 
   const openOverlay = (next: Overlay) => { setMenu(null); setOverlay(next) }
   const closeOverlay = () => setOverlay(null)
@@ -370,7 +425,7 @@ export function App() {
             <button className="side-link" data-active={overlay === 'search'} aria-haspopup="dialog" onClick={() => openOverlay('search')}>
               <Search /><span>Search</span><kbd aria-hidden="true">Ctrl K</kbd>
             </button>
-            <button className="side-link" aria-current={page === 'home' ? 'page' : undefined} onClick={() => go('home')}>
+            <button className="side-link" aria-current={page === 'home' && !canvasId ? 'page' : undefined} onClick={() => go('home')}>
               <House /><span>Home</span>
             </button>
             <button className="side-link" data-active={overlay === 'inbox'} aria-haspopup="dialog" onClick={() => openOverlay('inbox')}>
@@ -386,6 +441,7 @@ export function App() {
             </button>
           </div>
         </nav>
+        <ProjectTree projects={activeCanvases} current={canvasId} open={openCanvas} />
         <div className="sidebar-scroll" hidden>
           <section className="rail-group">
             <div className="rail-label">Favourites</div>
@@ -406,6 +462,11 @@ export function App() {
       </aside>
     </>}
     <main className="workspace-main">
+      {canvas ? <CanvasWorkspace key={canvas.id} project={canvas} store={canvases} sidebarOpen={sidebar}
+        sidebarToggleRef={sidebarToggleRef} toggleSidebar={toggleSidebar} openCanvas={openCanvas} goHome={() => go('home')}
+        openPage={id => go(pageIds.includes(id as Page) ? id as Page : 'home')} jump={jump} dark={dark} /> :
+      canvasId ? <div className="ic-route-message">{canvases.status === 'Loading' ? 'Opening canvas…' : canvases.error || 'Canvas unavailable.'}
+        <button className="quiet-button" onClick={() => go('home')}>Home</button></div> : <>
       <header className="topbar">
         <div className="topbar-start">
           {!sidebar && <button ref={sidebarToggleRef} className="icon-button side-toggle" title="Open sidebar" aria-label="Open sidebar"
@@ -437,15 +498,32 @@ export function App() {
         </div>}
       </header>
       <div className="workspace-scroll" key={page}>
-        {page === 'home' ? <Home go={go} /> :
-          page === 'projects' ? <Database view={view} onView={tab => { location.hash = 'projects/' + tab; setCurrent({ page, view: tab }) }} /> :
+        {page === 'home' ? <Home go={go}><ProjectCards projects={activeCanvases} create={() => setDraftCanvas(createProject(''))}
+          open={openCanvas} details={setDraftCanvas} importProjects={canvases.write} error={canvases.error} /></Home> :
+          page === 'projects' ? <Database view={view} onView={tab => { location.hash = 'projects/' + tab; setCurrent({ page, view: tab, canvasId: '' }) }} /> :
           <Document key={page} page={page} go={go} editorState={editorState} setEditorState={setEditorState} />}
       </div>
+      </>}
     </main>
     {overlay === 'inbox' && <EmptyDialog label="Inbox" message="You’re all caught up." icon={Inbox} close={closeOverlay} />}
-    {overlay === 'search' && <SearchModal close={closeOverlay} go={go} />}
+    {overlay === 'search' && <SearchModal close={closeOverlay} go={go} projects={activeCanvases} openCanvas={openCanvas} />}
+    {draftCanvas && <ProjectDetails project={draftCanvas} close={() => setDraftCanvas(null)}
+      onSave={async (project, assets) => {
+        await canvases.write([project], assets)
+        setDraftCanvas(null)
+        openCanvas(project.id)
+      }} />}
     {overlay === 'settings' && <SettingsModal close={closeOverlay} theme={theme} setTheme={setTheme} openAbout={() => openOverlay('about')} />}
-    {overlay === 'archive' && <EmptyDialog label="Trash" message="Trash is empty." icon={Trash2} close={closeOverlay} />}
+    {overlay === 'archive' && (!trashedCanvases.length ? <EmptyDialog label="Trash" message="Trash is empty." icon={Trash2} close={closeOverlay} /> :
+      <CanvasDialog title="Trash" close={closeOverlay}><div className="ic-form">
+        {trashedCanvases.map(project => <div className="ic-row" key={project.id}>
+          <span>{project.name}</span>
+          <button className="ic-button" onClick={() => {
+            void canvases.write([{ ...project, trashedAt: undefined, updatedAt: Date.now() }]).catch(() => {})
+          }}>Restore {project.name}</button>
+        </div>)}
+        {canvases.error && <p role="alert">{canvases.error}</p>}
+      </div></CanvasDialog>)}
     {overlay === 'new' && <Modal className="small-modal" label="New page preview" close={() => setOverlay(null)}><div className="simple-dialog">
       <FileText /><h2>New page</h2><p>Preview a document or database template.</p><div className="template-actions">
         <button className="quiet-button" onClick={() => go('handbook')}><ClipboardList /> Document</button>
