@@ -65,11 +65,19 @@ try {
   await page.reload()
   await page.getByRole('navigation', { name: 'Canvas breadcrumbs' }).getByText('Saved as a local copy', { exact: true }).waitFor()
   const savedCopy = await page.evaluate(async () => {
-    const { getAsset, getProjects } = await import('/src/features/icanvas/storage.ts')
-    const project = (await getProjects()).find(item => item.id === location.hash.split('/')[1])
-    const copy = project?.objects.find(item => item.name === 'accepted.txt')
-    const asset = copy?.assetId && await getAsset(copy.assetId)
-    return { content: await asset?.blob?.text(), rejected: project?.objects.some(item => item.name === 'rejected.html') }
+    const read = request => new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const db = await read(indexedDB.open('croft-icanvas'))
+    try {
+      const project = await read(db.transaction('projects').objectStore('projects').get(location.hash.split('/')[1]))
+      const copy = project?.objects.find(item => item.name === 'accepted.txt')
+      const asset = copy?.assetId && await read(db.transaction('assets').objectStore('assets').get(copy.assetId))
+      return { content: await asset?.blob?.text(), rejected: project?.objects.some(item => item.name === 'rejected.html') }
+    } finally {
+      db.close()
+    }
   })
   assert.deepEqual(savedCopy, { content: 'iCanvas test import.', rejected: false })
   assert.deepEqual(pageErrors, [])
