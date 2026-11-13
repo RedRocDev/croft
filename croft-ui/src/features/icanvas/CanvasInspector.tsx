@@ -35,7 +35,7 @@ interface InspectorProps extends CardActions {
   moveIntoFrame: (object: CanvasObject, frameId: string) => void
   fitFrame: (object: CanvasObject) => void
   settings: (patch: Partial<CanvasSettings>) => void
-  imageTools?: ReactNode
+  mediaTools?: ReactNode
 }
 
 function NumberField({ label, value, onCommit, min, max }: {
@@ -103,14 +103,14 @@ function TextField({ label, value, onCommit, multiline = false, required = false
 }
 
 function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fitFrame, flipCard, editBack, attachBack,
-  removeBackAttachment, selectStackMember, removeFromStack, setStackFanned, unstack, deleteStack, imageTools, swatches }: CardActions & {
+  removeBackAttachment, selectStackMember, removeFromStack, setStackFanned, unstack, deleteStack, mediaTools, swatches }: CardActions & {
   object: CanvasObject
   objects: ReadonlyMap<string, CanvasObject>
   update: UpdateObject
   reorder: InspectorProps['reorder']
   moveIntoFrame: InspectorProps['moveIntoFrame']
   fitFrame: InspectorProps['fitFrame']
-  imageTools?: ReactNode
+  mediaTools?: ReactNode
   swatches?: ProjectSwatch[]
 }) {
   const parent = object.parentId ? objects.get(object.parentId) : undefined
@@ -155,7 +155,7 @@ function ObjectProperties({ object, objects, update, reorder, moveIntoFrame, fit
       </button>
     </div>
     {parentLocked && <p className="ic-inspector-status">Locked by a parent layer.</p>}
-    {imageTools}
+    {mediaTools}
     {canFlip(object) && (flipCard || editBack) && <fieldset className="ic-inspector-section">
       <legend>Card faces</legend>
       <p className="ic-colour-hint">Showing {side === 'back' ? 'Back' : 'Front'}</p>
@@ -324,7 +324,7 @@ function ObjectLayers({ objects, selected, select, update }: {
   return objects.length ? layers() : <p className="ic-inspector-status">This canvas has no layers yet.</p>
 }
 
-export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings, imageTools, ...cardActions }: InspectorProps) {
+export function CanvasInspector({ project, selected, activeEdge, select, update, updateEdge, reorder, moveIntoFrame, fitFrame, settings, mediaTools, ...cardActions }: InspectorProps) {
   const bodyId = useId()
   const panel = project.settings.panel
   if (panel === 'closed') return null
@@ -350,7 +350,7 @@ export function CanvasInspector({ project, selected, activeEdge, select, update,
           <ColourPicker colour={edge.colour ?? colourForEdge[edge.kind]} swatches={project.swatches} onChange={colour => updateEdge(edge, { colour })} />
         </fieldset> :
         object ? <ObjectProperties key={object.id} object={object} objects={objects} update={update} reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame}
-          imageTools={imageTools} swatches={project.swatches} {...cardActions} /> :
+          mediaTools={mediaTools} swatches={project.swatches} {...cardActions} /> :
         <p className="ic-inspector-status">{selected.length ? selected.length + ' objects selected. Select one object to edit its properties.' : 'Select an object or connection to inspect it.'}</p>}
     </div>
   </aside>

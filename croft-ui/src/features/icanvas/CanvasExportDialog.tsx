@@ -61,7 +61,7 @@ export function CanvasExportDialog({ close, projects, project, selectedIds, dark
           {limited && <p role="alert">This scope exceeds the portable export limit. Use Workspace Backup to retain the larger attachments, or choose a smaller scope for a portable copy.</p>}
           {inventory.overLimit.length > 0 && <ul aria-label="Files above the portable limit">{inventory.overLimit.slice(0, 30).map(asset => <li key={asset.id}>{asset.name} ({formatMiB(asset.size)})</li>)}</ul>}
         </> : <>
-          <p>Visual exports show visible card faces and the current stack layout. Cropped or masked images are flattened to visible pixels. Audio, video and unavailable unedited images appear as labels.</p>
+          <p>Visual exports show visible card faces and the current stack layout. Cropped or masked images are flattened to visible pixels. Available audio waveforms are shown at the start of the track. Audio beyond the visual export budget, video and unavailable media appear as labels.</p>
           <p>Source images are limited to {formatMiB(visualExportLimits.sourceBytes)} each. Edited image output is capped at {visualExportLimits.editedSide}px per side, with a separate per-canvas image budget. Final canvas output is capped at {visualExportLimits.canvasSide}px per side and 12 megapixels.</p>
           {linkedImages > 0 && <p>Export needs read access to {linkedImages} linked edited image{linkedImages === 1 ? '' : 's'}. Restore file access or relink before exporting.</p>}
           {blockedImages.length > 0 && <section aria-label="Edited images blocking visual export">

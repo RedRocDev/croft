@@ -1,0 +1,41 @@
+.ic-audio-player {
+  position: relative;
+  align-self: center;
+  width: calc(100% - 14px);
+  max-width: 620px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: inherit;
+}
+.ic-card-back .ic-audio-player { width: 100%; }
+.ic-audio-player > audio { display: none; }
+.ic-audio-title, .ic-audio-controls { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.ic-audio-title { font-size: 12px; font-weight: 600; }
+.ic-audio-title svg { flex: none; width: 13px; height: 13px; }
+.ic-audio-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ic-audio-wave { position: relative; height: 36px; flex: none; }
+.ic-audio-wave-render, .ic-audio-wave-target { position: absolute; inset: 0; }
+.ic-audio-wave-render { pointer-events: none; }
+.ic-audio-wave-target { z-index: 1; cursor: ew-resize; touch-action: none; border-radius: 3px; }
+.ic-audio-hover {
+  position: absolute; z-index: 2; inset: auto 3px 2px auto; pointer-events: none; border-radius: 3px;
+  padding: 1px 4px; font-size: 10px; color: var(--ink); background: var(--surface);
+}
+.ic-audio-controls .ic-icon { min-width: 25px; height: 23px; padding: 0 4px; color: inherit; }
+.ic-audio-controls .ic-icon svg { width: 13px; height: 13px; }
+.ic-audio-time { font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ic-audio-mute { margin-left: auto; }
+.ic-audio-volume { width: clamp(22px, 17%, 54px); min-width: 0; }
+.ic-audio-seek { width: 100%; min-width: 0; height: 12px; }
+.ic-audio-player input { accent-color: var(--accent); touch-action: none; }
+.ic-audio-status { font-size: 10px; line-height: 1.2; }
+.ic-audio-status button { text-decoration: underline; margin-inline-start: 4px; }
+.ic-audio-player :is(input, button, [role="slider"]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ic-audio-properties > details { margin: 6px 0; }
+.ic-audio-properties summary { cursor: pointer; font-weight: 600; }
+.ic-audio-colours { display: grid; gap: 8px; margin-top: 6px; min-width: 0; }
+.ic-audio-colours [role="group"] > span { display: block; margin-bottom: 3px; color: var(--muted); }
+.ic-audio-swatch { display: grid; place-items: center; color: var(--muted); }
+.ic-audio-swatch svg { width: 55%; height: 65%; }

@@ -198,7 +198,7 @@ try {
     assert.deepEqual(await image.evaluate(node => [node.naturalWidth, node.naturalHeight]), [96, 64])
     for (const [selector, name] of [['audio', 'Smart tone.wav'], ['video', 'Smart motion.webm']]) {
       const media = canvas.locator(`${selector}[aria-label="${name}"]`)
-      await media.waitFor()
+      await media.waitFor({ state: 'attached' })
       const playback = await media.evaluate(async node => {
         node.muted = true
         const video = node instanceof HTMLVideoElement

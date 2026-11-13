@@ -8,8 +8,12 @@ import { rotatedBounds } from './geometry'
 import { layoutStacks } from './stackScene'
 import { EditedImage, EditedImageThumbnail } from './ImageVisual'
 import { imageEffectInsets, imageFrameSize, type ImageEdits } from './imageEdits'
+import { AudioPlayer } from './AudioPlayer'
+import type { AudioAppearance } from './audioAppearance'
+import { audioSourceKey } from './audioPeaks'
 
-type MediaResult = { url?: string; problem?: FileAccessProblem; handle?: FileSystemFileHandle; asset?: Pick<CanvasAsset, 'mime' | 'name'> }
+type MediaResult = { url?: string; problem?: FileAccessProblem; handle?: FileSystemFileHandle; asset?: Pick<CanvasAsset, 'mime' | 'name'>;
+  audioSource?: { blob: Blob; key: string } }
 
 export function useAssetUrl(assetId?: string) {
   const [result, setResult] = useState<{ id: string } & MediaResult>()
@@ -27,12 +31,14 @@ export function useAssetUrl(assetId?: string) {
     let url: string | undefined
     let listening = false
     let previousModified: number | undefined
+    let audioSource: MediaResult['audioSource']
 
     async function observe() {
       const version = ++requestVersion
       let next: MediaResult
       let blob: Blob | undefined
       let modified: number | undefined
+      let key: string | undefined
       try {
         const asset = await getAsset(id)
         if (!active || version !== requestVersion) return
@@ -44,13 +50,17 @@ export function useAssetUrl(assetId?: string) {
         if (!asset) next = { problem: 'missing' }
         else if (asset.blob) {
           next = asset.blob.size === asset.size ? {} : { problem: 'unavailable' }
-          if (!next.problem) blob = asset.blob.slice(0, asset.blob.size, asset.mime)
+          if (!next.problem) {
+            blob = asset.blob.slice(0, asset.blob.size, asset.mime)
+            if (asset.mime.startsWith('audio/')) key = audioSourceKey(asset)
+          }
         } else if (asset.handle) {
           const outcome = await readLinkedFile({ ...asset, handle: asset.handle }, safeCanvasMime)
           next = { handle: asset.handle }
           if ('file' in outcome) {
             blob = outcome.file.slice(0, outcome.file.size, asset.mime)
             modified = outcome.file.lastModified
+            if (asset.mime.startsWith('audio/')) key = audioSourceKey(asset, outcome.file)
           } else next.problem = outcome.problem
         } else next = { problem: 'unavailable' }
         if (asset) next.asset = { mime: asset.mime, name: asset.name }
@@ -61,9 +71,10 @@ export function useAssetUrl(assetId?: string) {
       if (!blob || !url || modified !== previousModified) {
         if (url) URL.revokeObjectURL(url)
         url = blob && URL.createObjectURL(blob)
+        audioSource = blob && key ? { blob, key } : undefined
       }
       previousModified = modified
-      setResult({ id, ...next, url })
+      setResult({ id, ...next, url, audioSource })
     }
 
     const onFocus = () => { void observe() }
@@ -102,6 +113,7 @@ export function useAssetUrl(assetId?: string) {
   }
   return {
     url: current?.url,
+    audioSource: current?.audioSource,
     asset: current?.asset,
     problem: current?.problem,
     requestProblem: requestResult?.id === assetId ? requestResult?.problem : undefined,
@@ -190,8 +202,9 @@ function pauseOnDetach(media: HTMLMediaElement | null) {
   if (media) return () => { media.pause() }
 }
 
-function BackAttachment({ assetId, replace, edits, compare, frame }: {
+function BackAttachment({ assetId, replace, edits, compare, frame, audioAppearance, dark }: {
   assetId: string; replace?: () => void; edits?: ImageEdits; compare?: boolean; frame?: { width: number; height: number }
+  audioAppearance?: AudioAppearance; dark?: boolean
 }) {
   const media = useAssetUrl(assetId)
   if (media.problem) return <AssetAccess media={media} hasAsset replace={replace} />
@@ -200,13 +213,13 @@ function BackAttachment({ assetId, replace, edits, compare, frame }: {
   if (asset.mime.startsWith('image/')) return frame && edits
     ? <EditedImage url={url} alt={asset.name} edits={edits} compare={compare} frame={frame} />
     : <img src={url} alt={asset.name} draggable={false} />
-  if (asset.mime.startsWith('audio/')) return <audio ref={pauseOnDetach} controls preload="metadata" src={url} aria-label={asset.name} />
+  if (media.audioSource) return <AudioPlayer url={url} source={media.audioSource} title={asset.name} appearance={audioAppearance} dark={dark} showTitle />
   if (asset.mime.startsWith('video/')) return <video ref={pauseOnDetach} controls preload="none" src={url} aria-label={asset.name} />
   return <a className="ic-card-back-file" href={url} download={asset.name}><FileText size={14} />{asset.name}</a>
 }
 
-function CardBackFace({ object, replace, imageDraft, compareImage }: Pick<ObjectContentProps, 'object' | 'imageDraft' | 'compareImage'> & { replace?: () => void }) {
-  const { title, text, assetId, imageEdits } = cardFace(object, 'back')
+function CardBackFace({ object, replace, imageDraft, compareImage, dark }: Pick<ObjectContentProps, 'object' | 'imageDraft' | 'compareImage' | 'dark'> & { replace?: () => void }) {
+  const { title, text, assetId, imageEdits, audioAppearance } = cardFace(object, 'back')
   const edits = imageDraft ?? imageEdits
   const textStyle = { textAlign: object.textAlign }
   const content = <>
@@ -227,7 +240,7 @@ function CardBackFace({ object, replace, imageDraft, compareImage }: Pick<Object
   return <div className="ic-card-back" data-card-scroll>
     {content}
     {assetId && <div className="ic-card-back-asset" data-media-control>
-      <BackAttachment assetId={assetId} replace={replace} />
+      <BackAttachment assetId={assetId} replace={replace} audioAppearance={audioAppearance} dark={dark} />
     </div>}
     {!title && !text && !assetId && <p className="ic-card-back-empty">The back is empty.</p>}
   </div>
@@ -236,20 +249,25 @@ function CardBackFace({ object, replace, imageDraft, compareImage }: Pick<Object
 type ObjectContentProps = {
   object: CanvasObject; target?: CanvasProject; reloadMedia?: string; replace: () => void; canRelink?: boolean; replaceBack?: () => void
   imageDraft?: ImageEdits; compareImage?: boolean
+  dark?: boolean
 }
 
 export function ObjectContent(props: ObjectContentProps) {
   return cardSide(props.object) === 'back'
     ? <CardBackFace object={props.object} replace={props.canRelink === false ? undefined : props.replaceBack}
-      imageDraft={props.imageDraft} compareImage={props.compareImage} />
+      imageDraft={props.imageDraft} compareImage={props.compareImage} dark={props.dark} />
     : <FrontContent {...props} />
 }
 
-function FrontContent({ object, target, reloadMedia, replace, canRelink = true, imageDraft, compareImage }: ObjectContentProps) {
+function FrontContent({ object, target, reloadMedia, replace, canRelink = true, imageDraft, compareImage, dark }: ObjectContentProps) {
   const media = useAssetUrl(reloadMedia)
   const { url, problem } = media
   const showsMedia = object.kind === 'audio' || object.kind === 'video' || object.kind === 'image' || object.kind === 'file'
   if (showsMedia && (problem || !reloadMedia)) return <AssetAccess media={media} hasAsset={!!reloadMedia} replace={canRelink ? replace : undefined} />
+  if (url && media.audioSource && (object.kind === 'audio' || object.kind === 'file')) {
+    return <AudioPlayer url={url} source={media.audioSource} title={object.name} appearance={object.audioAppearance} dark={dark}
+      showTitle={object.mode === 'direct' || object.kind === 'file'} />
+  }
   switch (object.kind) {
     case 'image': {
       if (!url) return <div className="ic-media-placeholder">Loading image…</div>
@@ -260,7 +278,7 @@ function FrontContent({ object, target, reloadMedia, replace, canRelink = true, 
         <EditedImage url={url} alt={object.name} edits={edits} compare={compareImage} frame={frame} />
       </div>
     }
-    case 'audio': return url ? <audio ref={pauseOnDetach} controls preload="metadata" src={url} aria-label={object.name} /> : <div className="ic-media-placeholder"><AudioLines size={18} /> Audio</div>
+    case 'audio': return url ? <AssetAccess media={media} hasAsset replace={canRelink ? replace : undefined} /> : <div className="ic-media-placeholder"><AudioLines size={18} /> Loading audio…</div>
     case 'video': return url ? <video ref={pauseOnDetach} controls preload="none" src={url} aria-label={object.name} /> : <div className="ic-media-placeholder"><Video size={18} /> Video</div>
     case 'file': return <div className="ic-media-placeholder"><FileText size={18} />{object.name}{url && <a href={url} download={object.name}>Download</a>}</div>
     case 'canvas': return target ? <><CanvasThumbnail project={target} /><div className="ic-object-title"><Layers size={14} />{target.name}</div></> : <div className="ic-media-placeholder">Canvas unavailable</div>

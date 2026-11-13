@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
 import RBush from 'rbush'
 import {
-  ArrowDownToLine, ArrowRight, Box, ChevronDown, ChevronRight, Circle, Copy, Crop, Eye, FileText, GripHorizontal, Hand, Image,
+  ArrowDownToLine, ArrowRight, AudioLines, Box, ChevronDown, ChevronRight, Circle, Copy, Crop, Eye, FileText, GripHorizontal, Hand, Image,
   Layers, Lock, LockOpen, Maximize, Minus, MoreHorizontal, MousePointer2, PanelLeft, PenLine, Play, Plus, Redo2, RotateCw,
   Save, Search, SlidersHorizontal, Sparkles, Square, StickyNote, TextAlignCenter, TextAlignEnd, TextAlignStart, Trash2, Type, Undo2, Unlink, X,
 } from 'lucide-react'
@@ -21,6 +21,8 @@ import { CanvasSaveDialogs } from './CanvasSaveDialogs'
 import { CanvasBackupDialog } from './CanvasBackupDialog'
 import { CanvasExportDialog } from './CanvasExportDialog'
 import { ImageTools } from './ImageTools'
+import { AudioProperties } from './AudioProperties'
+import type { AudioAppearance } from './audioAppearance'
 import { defaultImageEdits, imageEffectInsets, imageFrameSize, readImageEdits, type ImageEdits } from './imageEdits'
 import { getAsset } from './storage'
 import { droppedCanvasFiles, ImportDialog, pickCanvasFiles, type CanvasFile, type CanvasPreparedAsset } from './ImportDialog'
@@ -105,7 +107,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   const [imageSection, setImageSection] = useState<{ key: string; section: ImageShortcut; tick: number }>()
   const [imageDraft, setImageDraft] = useState<{ key: string; edits: ImageEdits }>()
   const [compareImage, setCompareImage] = useState<string>()
-  const [backAsset, setBackAsset] = useState<{ id: string; image: boolean }>()
+  const [selectedAsset, setSelectedAsset] = useState<{ id: string; mime?: string }>()
   const [files, setFiles] = useState<CanvasFile[]>()
   const [replaceId, setReplaceId] = useState('')
   const [replaceSide, setReplaceSide] = useState<CardSide>('front')
@@ -193,19 +195,23 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
   })
   const singleSelection = chosen.length === 1 ? chosen[0] : undefined
   const imageSide = singleSelection ? cardSide(singleSelection) : 'front'
-  const candidate = singleSelection && imageAssetId(singleSelection)
-  const backAssetId = imageSide === 'back' ? candidate : undefined
+  const selectedFace = singleSelection ? cardFace(singleSelection) : undefined
+  const inspectAssetId = selectedFace && (imageSide === 'back' || singleSelection?.kind === 'file') ? selectedFace.assetId : undefined
   useEffect(() => {
-    if (!backAssetId) return
+    if (!inspectAssetId) return
     let active = true
-    void getAsset(backAssetId).then(asset => {
-      if (active) setBackAsset({ id: backAssetId, image: !!asset?.mime.startsWith('image/') })
+    void getAsset(inspectAssetId).then(asset => {
+      if (active) setSelectedAsset({ id: inspectAssetId, mime: asset?.mime })
     }).catch(() => {
-      if (active) setBackAsset({ id: backAssetId, image: false })
+      if (active) setSelectedAsset({ id: inspectAssetId })
     })
     return () => { active = false }
-  }, [backAssetId])
-  const image = candidate && (imageSide === 'front' || backAsset?.id === candidate && backAsset.image || !!singleSelection?.back?.imageEdits) ? candidate : undefined
+  }, [inspectAssetId])
+  const selectedMime = selectedAsset?.id === inspectAssetId ? selectedAsset?.mime : undefined
+  const candidate = singleSelection && imageAssetId(singleSelection)
+  const image = candidate && (imageSide === 'front' || selectedMime?.startsWith('image/') || selectedFace?.imageEdits) ? candidate : undefined
+  const audio = selectedFace?.assetId && (imageSide === 'front' && singleSelection?.kind === 'audio' ||
+    selectedMime?.startsWith('audio/') || selectedFace.audioAppearance) ? selectedFace.assetId : undefined
   const imageKey = image && singleSelection ? `${singleSelection.id}/${imageSide}/${image}` : undefined
   useEffect(() => {
     setImageDraft(undefined)
@@ -432,6 +438,14 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       if (JSON.stringify(previous.imageEdits) === JSON.stringify(imageEdits)) return
       changeObject(object, side === 'front' ? { imageEdits } : { back: { ...previous, imageEdits } })
     } catch (reason) { onError(reason) }
+  }
+
+  function commitAudioAppearance(id: string, side: CardSide, asset: string, appearance?: AudioAppearance) {
+    const object = project.objects.find(item => item.id === id)
+    if (!object || !validForEdit(object)) return
+    const face = cardFace(object, side)
+    if (face.assetId !== asset || JSON.stringify(face.audioAppearance) === JSON.stringify(appearance)) return
+    changeObject(object, side === 'back' ? { back: { ...face, audioAppearance: appearance } } : { audioAppearance: appearance })
   }
 
   function canTransform(ids: Set<string>) {
@@ -1010,6 +1024,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       const object = indexed.map.get(replaceId)
       if (!object || !validForEdit(object) || !canFlip(object) || assets.length !== 1) throw new Error('Choose one attachment for an editable card.')
       if (object.back?.imageEdits && !assets[0].mime.startsWith('image/')) throw new Error('Choose an image to keep these edits, or reset the Back image edits before replacing it.')
+      if (object.back?.audioAppearance && !assets[0].mime.startsWith('audio/')) throw new Error('Choose audio to keep this appearance, or reset the Back audio appearance before replacing it.')
       const back = { ...cardFace(object, 'back'), assetId: assets[0].id }
       const next = { ...project, objects: project.objects.map(item => item.id === replaceId ? { ...item, back } : item), updatedAt: Date.now() }
       await write([next], assets)
@@ -1040,7 +1055,10 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
       }
     } else {
       const replaced = edited.find(object => object.id === replaceId)
-      if (assets.length !== 1 || !replaced || shapeForAsset(assets[0]) !== replaced.kind) throw new Error('Choose one matching media file.')
+      const original = project.objects.find(object => object.id === replaceId)
+      const originalAsset = original?.kind === 'file' && original.assetId ? await getAsset(original.assetId) : undefined
+      const fileWithAudio = replaced?.kind === 'file' && assets[0].mime.startsWith('audio/') && (replaced.audioAppearance || originalAsset?.mime.startsWith('audio/'))
+      if (assets.length !== 1 || !replaced || (!fileWithAudio && shapeForAsset(assets[0]) !== replaced.kind)) throw new Error('Choose one matching media file.')
     }
     const changes = new Map<string, CanvasObject>()
     const frame = frameAt(begin)
@@ -1136,6 +1154,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
     onCompare={active => setCompareImage(active ? imageKey : undefined)}
     onSwatches={swatches => { if (canEdit && validForEdit(singleSelection)) editSwatches(swatches) }}
     onRelink={() => void addFiles(singleSelection.id, imageSide)} /> : undefined
+  const mediaInspector = audio && singleSelection ? <AudioProperties key={`${singleSelection.id}/${imageSide}/${audio}`}
+    appearance={selectedFace?.audioAppearance} dark={dark} disabled={!validForEdit(singleSelection)} swatches={project.swatches}
+    change={appearance => commitAudioAppearance(singleSelection.id, imageSide, audio, appearance)} /> : imageInspector
 
   return <section className="ic-workspace" data-presentation={!!play}>
     {!play && <header className="ic-header">
@@ -1215,7 +1236,8 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           const card = object.mode === 'card'
           const isBack = cardSide(object) === 'back'
           const isMember = !!object.parentId && !!indexed.map.get(object.parentId)?.stack
-          const atThumbnailScale = Math.max(object.width, object.height) * camera.zoom < 18 && !picked
+          const audioFace = object.kind === 'audio' && !isBack || !!cardFace(object).audioAppearance
+          const atThumbnailScale = Math.max(object.width, object.height) * camera.zoom < (audioFace ? 52 : 18) && !picked
           const mediaAsset = imageAssetId(object)
           const mediaKey = !play && mediaAsset ? `${object.id}/${cardSide(object)}/${mediaAsset}` : undefined
           return <div key={object.id} className="ic-item" data-kind={object.kind} data-mode={object.mode} data-selected={picked}
@@ -1241,9 +1263,9 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
               setContextPoint(localPoint(event))
             } }}
             data-testid={'canvas-object-' + object.id} aria-label={object.name}>
-            {atThumbnailScale ? <div className="ic-item-swatch" /> : object.kind === 'frame' ? <span className="ic-frame-label"><Box size={14} /> {object.name}{object.collapsed && <small>{project.objects.filter(item => item.parentId === object.id).length} items</small>}</span> : <>
+            {atThumbnailScale ? <div className={audioFace ? 'ic-item-swatch ic-audio-swatch' : 'ic-item-swatch'}>{audioFace && <AudioLines aria-hidden="true" />}</div> : object.kind === 'frame' ? <span className="ic-frame-label"><Box size={14} /> {object.name}{object.collapsed && <small>{project.objects.filter(item => item.parentId === object.id).length} items</small>}</span> : <>
               {!isBack && card && !['canvas', 'page', 'file', 'note'].includes(object.kind) && <span className="ic-object-title">{object.name}</span>}
-              <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit && !locked}
+              <ObjectContent object={object} target={target} reloadMedia={object.assetId} canRelink={canEdit && !locked} dark={dark}
                 replace={() => void addFiles(object.id)} replaceBack={() => void addFiles(object.id, 'back')}
                 imageDraft={mediaKey && mediaKey === imageKey && imageDraft?.key === mediaKey ? imageDraft.edits : undefined}
                 compareImage={!!mediaKey && mediaKey === imageKey && compareImage === mediaKey} />
@@ -1484,7 +1506,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           <button className="ic-icon" aria-label="Zoom in" onClick={() => zoom(camera.zoom * 1.25)}><Plus /></button>
           <button className="ic-icon" aria-label="Fit All" title="Fit All" onClick={() => fit()}><Maximize /></button>
         </div>
-        {panelOpen && <div className="ic-inspector-shell" data-card-scroll onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge} imageTools={imageInspector}
+        {panelOpen && <div className="ic-inspector-shell" data-card-scroll onPointerDown={event => event.stopPropagation()}><CanvasInspector project={project} selected={chosen} activeEdge={activeEdge} mediaTools={mediaInspector}
           select={id => {
             const object = indexed.map.get(id)
             if (object && object.parentId && indexed.map.get(object.parentId)?.stack) revealCard(object)
@@ -1492,7 +1514,7 @@ export function CanvasWorkspace({ project, store, sidebarOpen, sidebarToggleRef,
           }} update={changeObject} updateEdge={(edge, patch) => edit(project.objects, project.edges.map(item => item.id === edge.id ? { ...item, ...patch } : item))}
           reorder={reorder} moveIntoFrame={moveIntoFrame} fitFrame={fitFrame} settings={updateSettings} flipCard={flipCard}
           editBack={object => { if (validForEdit(object)) setEditingBack(object.id) }} attachBack={object => void addFiles(object.id, 'back')}
-          removeBackAttachment={object => changeObject(object, { back: { ...cardFace(object, 'back'), assetId: undefined, imageEdits: undefined } })}
+          removeBackAttachment={object => changeObject(object, { back: { ...cardFace(object, 'back'), assetId: undefined, imageEdits: undefined, audioAppearance: undefined } })}
           selectStackMember={(_, member) => revealCard(member)} removeFromStack={removeFromStack} setStackFanned={changeStackLayout}
           unstack={object => stackAction(() => unstackAll(project.objects, object.id), object.stack?.order[0])}
           deleteStack={object => { setStackToDelete(object.id); show('deleteStack') }} /></div>}

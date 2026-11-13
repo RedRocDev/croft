@@ -8,6 +8,8 @@ import { assertCanvasImageMetadata, assertEditedImageAsset, canvasFormatVersion,
 import { imageEffectInsets, imageFrameSize, readImageEdits, type ImageEdits } from './imageEdits.ts'
 import { loadImage, renderEditedImage } from './imageRendering.ts'
 import { readLinkedFile } from './linkedFiles.ts'
+import { assertProjectAudioAppearance, assertStyledAudioAsset, formatAudioTime, readAudioAppearance, resolvedAudioAppearance, styledAudioAssetIds, type AudioAppearance } from './audioAppearance.ts'
+import { audioSourceKey, getCachedAudioPeaks, loadAudioPeaks, measureAudioSource, type AudioPeakResult } from './audioPeaks.ts'
 
 export type CanvasExportFormat = 'croft' | 'zip' | 'svg' | 'png' | 'jpg' | 'pdf'
 export type CanvasExportOptions = {
@@ -23,6 +25,7 @@ type JsonObject = Record<string, unknown>
 
 const limit = { package: 120 * 1024 ** 2, manifest: 8 * 1024 ** 2, asset: 40 * 1024 ** 2, projects: 1000, objects: 25000, assets: 2000 }
 export const visualExportLimits = { sourceBytes: 16 * 1024 ** 2, imageMarkup: 48 * 1024 ** 2, editedSide: 1600, canvasSide: 4096, canvasPixels: 12_000_000 }
+const visualAudioLimits = { newSources: 6, totalWaveforms: 256, decodeWindowMs: 5000, bars: 96 }
 const objectKinds = ['text', 'note', 'rectangle', 'ellipse', 'stroke', 'image', 'audio', 'video', 'file', 'canvas', 'frame', 'group', 'page', 'stack'] as const
 const assetPath = /^assets\/[0-9]{5}\.bin$/
 const activeFileName = /\.(?:app|bat|cmd|com|cpl|dll|exe|hta|html?|jar|js|jse|lnk|msi|msp|pif|ps1|reg|scf|scr|svgz?|url|vb[es]?|ws[fh]|xhtml|xml)(?:\s|\.)*$/i
@@ -98,10 +101,12 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
   const back = optional(data.back, value => {
     const face = object(value)
     const imageEdits = optional(face.imageEdits, readImageEdits)
+    const audioAppearance = optional(face.audioAppearance, readAudioAppearance)
     return { title: string(face.title, generous ? Infinity : 512), text: string(face.text, generous ? Infinity : 200_000), assetId: optional(face.assetId, id),
-      ...(imageEdits && { imageEdits }) }
+      ...(imageEdits && { imageEdits }), ...(audioAppearance && { audioAppearance }) }
   })
   const imageEdits = optional(data.imageEdits, readImageEdits)
+  const audioAppearance = optional(data.audioAppearance, readAudioAppearance)
   const textColour = optional(data.textColour, readColour)
   const visibleSide = optional(data.visibleSide, side => oneOf(side, ['front', 'back']))
   const textAlign = optional(data.textAlign, alignment => oneOf(alignment, ['left', 'center', 'right']))
@@ -122,6 +127,7 @@ function readObject(value: unknown, generous: boolean, maxItems: number): Canvas
     border: optional(data.border, boolean), referenceOnly: optional(data.referenceOnly, boolean),
     ...(back && { back }),
     ...(imageEdits && { imageEdits }),
+    ...(audioAppearance && { audioAppearance }),
     ...(textColour && { textColour }),
     ...(visibleSide && { visibleSide }),
     ...(textAlign && { textAlign }),
@@ -172,6 +178,7 @@ export function readProject(value: unknown, workspaceMaxItems?: number): CanvasP
     }),
   }
   assertCanvasImageMetadata(project)
+  assertProjectAudioAppearance(project)
   return project
 }
 
@@ -216,7 +223,7 @@ function checkHierarchy(rows: Map<string, { id: string; parentId?: string | null
 function readManifest(bytes: Uint8Array): Manifest {
   requireValue(bytes.byteLength <= limit.manifest, 'Package manifest is too large.')
   const data = object(JSON.parse(decoder.decode(bytes)) as unknown)
-  requireValue(data.format === 'croft-icanvas' && (data.version === 1 || data.version === 2 || data.version === 3), 'Unsupported Croft package format or version.')
+  requireValue(data.format === 'croft-icanvas' && (data.version === 1 || data.version === 2 || data.version === 3 || data.version === 4), 'Unsupported Croft package format or version.')
   const projects = list(data.projects, limit.projects).map((entry) => readProject(entry))
   const neededVersion = canvasFormatVersion(projects)
   requireValue(data.version >= neededVersion, `This content requires a version ${neededVersion} Croft package.`)
@@ -228,6 +235,11 @@ function readManifest(bytes: Uint8Array): Manifest {
     const asset = assetMap.get(id)
     if (asset?.path && asset.mime === 'application/octet-stream') throw new Error('Edited image source data do not match a supported raster image.')
     assertEditedImageAsset(asset)
+  }
+  for (const id of styledAudioAssetIds(projects)) {
+    const asset = assetMap.get(id)
+    requireValue(!asset?.path || asset.mime !== 'application/octet-stream', 'Audio appearance requires an audio source.')
+    assertStyledAudioAsset(asset)
   }
   checkHierarchy(projectMap)
   for (const project of projects) {
@@ -339,6 +351,7 @@ export async function importProject(file: Blob): Promise<{ projects: CanvasProje
   const assetIds = new Map<string, string>()
   const assets: CanvasAsset[] = []
   const editedIds = editedImageAssetIds(manifest.projects)
+  const audioIds = styledAudioAssetIds(manifest.projects)
   for (const entry of manifest.assets) {
     const assetId = crypto.randomUUID()
     assetIds.set(entry.id, assetId)
@@ -352,6 +365,7 @@ export async function importProject(file: Blob): Promise<{ projects: CanvasProje
     const type = safeMime(mime, fileBytes)
     const asset = { id: assetId, name, mime: type, size, blob: new Blob([cloneBytes(fileBytes)], { type }) }
     if (editedIds.has(entry.id)) assertEditedImageAsset(asset)
+    if (audioIds.has(entry.id)) assertStyledAudioAsset(asset)
     assets.push(asset)
   }
   const projectIds = new Map(manifest.projects.map((project) => [project.id, crypto.randomUUID()]))
@@ -529,6 +543,74 @@ async function embedImage(asset: CanvasAsset | undefined) {
   return `data:${mime};base64,${btoa(chunks.join(''))}`
 }
 
+type StaticAudioData = { duration?: number; waveform?: Extract<AudioPeakResult, { status: 'ready' }> }
+type StaticAudioBudget = ReturnType<typeof newStaticAudioBudget>
+
+function newStaticAudioBudget() {
+  return { newSources: visualAudioLimits.newSources, remaining: visualAudioLimits.totalWaveforms,
+    until: performance.now() + visualAudioLimits.decodeWindowMs, inspected: new Map<string, StaticAudioData>() }
+}
+
+async function staticAudioData(asset: CanvasAsset | undefined, budget: StaticAudioBudget): Promise<StaticAudioData> {
+  if (!asset || typeof document === 'undefined' || budget.remaining <= 0) return {}
+  const previous = budget.inspected.get(asset.id)
+  if (previous) return previous
+  const known = asset.blob && asset.blob.size === asset.size && getCachedAudioPeaks(audioSourceKey(asset))
+  if (known) return { duration: known.duration, waveform: known }
+  const timeLeft = Math.ceil(budget.until - performance.now())
+  if (timeLeft <= 0 || budget.newSources <= 0 || !asset.blob && !asset.handle) return {}
+  budget.newSources--
+  const signal = AbortSignal.timeout(timeLeft)
+  try {
+    let source = asset.blob
+    let linked: File | undefined
+    if (!source && asset.handle) {
+      const result = await readLinkedFile({ ...asset, handle: asset.handle }, async file =>
+        safeMime(file.type, new Uint8Array(await file.slice(0, 2048).arrayBuffer())))
+      if ('file' in result) source = linked = result.file
+    }
+    if (!source || source.size !== asset.size || signal.aborted) throw new Error('Audio unavailable for visual export.')
+    const key = audioSourceKey(asset, linked)
+    const cached = getCachedAudioPeaks(key)
+    const duration = cached?.duration ?? await measureAudioSource(source, signal)
+    const result = cached ?? await loadAudioPeaks({ blob: source, key }, duration, signal)
+    const found = { duration, waveform: result.status === 'ready' ? result : undefined }
+    budget.inspected.set(asset.id, found)
+    return found
+  } catch {
+    budget.inspected.set(asset.id, {})
+    return {}
+  }
+}
+
+function staticAudioSvg(title: string, width: number, height: number, ink: string, dark: boolean,
+  appearance: AudioAppearance | undefined, data: StaticAudioData, offset = 0) {
+  const { waveform, duration } = data
+  const heading = textSvg(title, width, 23, ink, 13, 10, 17)
+  const timing = duration === undefined ? '' : ` · ${formatAudioTime(duration)}`
+  if (!waveform || height < 56 || width < 32) {
+    return `<svg y="${offset}" width="${width}" height="${height}" data-audio-waveform="unavailable" aria-label="Waveform unavailable">${heading}${textSvg(`Audio${timing} · Waveform unavailable`, width, height, ink, 11, 10, 36)}</svg>`
+  }
+  const style = resolvedAudioAppearance(appearance, dark)
+  const count = Math.min(waveform.peaks.length, visualAudioLimits.bars, Math.max(1, Math.floor((width - 20) / 3)))
+  const step = (width - 22) / count
+  const barTop = 25
+  const barBottom = height - 20
+  const barMiddle = (barTop + barBottom) / 2
+  let path = ''
+  for (let i = 0; i < count; i++) {
+    const start = Math.floor(i * waveform.peaks.length / count)
+    const end = Math.floor((i + 1) * waveform.peaks.length / count)
+    let peak = 0
+    for (let j = start; j < end; j++) peak = Math.max(peak, Math.abs(waveform.peaks[j]))
+    if (peak <= 0) continue
+    const x = (12 + (i + .5) * step).toFixed(2)
+    const amplitude = peak * (barBottom - barTop) / 2
+    path += `M${x} ${(barMiddle - amplitude).toFixed(2)}V${(barMiddle + amplitude).toFixed(2)}`
+  }
+  return `<svg y="${offset}" width="${width}" height="${height}" data-audio-waveform="unplayed" data-audio-duration="${waveform.duration}">${heading}<path d="${path}" fill="none" stroke="${style.waveColour}" stroke-width="${Math.max(.65, Math.min(2, step * .62))}" stroke-linecap="round"/><path d="M11 ${barTop}V${barBottom}" stroke="${style.playheadColour}" stroke-width="1.3"/>${textSvg(formatAudioTime(waveform.duration), width, height, ink, 11, 10, height - 6, 'right')}</svg>`
+}
+
 function visibleScene(project: CanvasProject) {
   const byId = new Map(project.objects.map(item => [item.id, item]))
   const stacks = layoutStacks(project.objects)
@@ -594,7 +676,7 @@ async function editedImageMarkup(asset: CanvasAsset | undefined, item: CanvasObj
   } finally { URL.revokeObjectURL(url) }
 }
 
-export async function renderProjectSvg(project: CanvasProject, options: CanvasExportOptions = {}, assets: readonly CanvasAsset[] = []) {
+export async function renderProjectSvg(project: CanvasProject, options: CanvasExportOptions = {}, assets: readonly CanvasAsset[] = [], audioBudget = newStaticAudioBudget()) {
   const { byId, stacks, shown, visible } = visibleScene(project)
   const rear = [...stacks.piles.values()].filter(pile => shown.has(pile.stack.id)).flatMap(pile => [...pile.rear].reverse())
   const boxes = [...visible.flatMap(item => {
@@ -617,6 +699,11 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
   const dot = dark ? '#4e5851' : '#cbd5cd'
   const surface = dark ? '#323a35' : '#ffffff'
   const assetMap = new Map(assets.map((asset) => [asset.id, asset]))
+  const audioMarkup = async (title: string, item: CanvasObject, asset: CanvasAsset | undefined, appearance: AudioAppearance | undefined, offset = 0) => {
+    const data = await staticAudioData(asset, audioBudget)
+    if (data.waveform) audioBudget.remaining--
+    return staticAudioSvg(title, item.width, item.height - offset, item.mode === 'card' ? readableInk(item.colour) ?? ink : ink, dark, appearance, data, offset)
+  }
   const edgeLines = project.edges.filter((edge) => shown.has(edge.from) && shown.has(edge.to) && project.settings.showEdges[edge.kind]).map((edge) => {
     const first = (stacks.proxies.get(edge.from) ?? byId.get(edge.from))!
     const last = (stacks.proxies.get(edge.to) ?? byId.get(edge.to))!
@@ -659,13 +746,23 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
     let content: string
     if (cardSide(item) === 'back') {
       const side = cardFace(item, 'back')
-      const edits = item.back?.imageEdits
-      const media = edits ? null : await mediaUri(side.assetId)
-      const assetLabel = side.assetId ? assetMap.get(side.assetId)?.name || 'Attachment unavailable in export' : ''
-      const textHeight = edits ? imageFrameSize(item, 'back').y : media ? item.height * .45 : item.height
-      const body = [side.text, media || edits ? '' : assetLabel].filter(Boolean).join('\n') || (!side.title && !side.assetId ? 'The back is empty.' : '')
-      content = fill + backTextSvg(side.title, body, item.width, textHeight, cardInk, item.textAlign) +
-        (edits ? await editedMedia(side.assetId, item, edits) : media ? `<image href="${media}" x="8" y="${textHeight}" width="${Math.max(1, item.width - 16)}" height="${Math.max(1, item.height - textHeight - 8)}" preserveAspectRatio="xMidYMid meet"/>` : '')
+      const asset = side.assetId ? assetMap.get(side.assetId) : undefined
+      if (side.audioAppearance || asset?.mime.startsWith('audio/')) {
+        const offset = Math.min(item.height * .45, side.title || side.text ? 54 : 20)
+        content = fill + backTextSvg(side.title, side.text, item.width, offset, cardInk, item.textAlign) +
+          await audioMarkup(asset?.name ?? 'Audio attachment', item, asset, side.audioAppearance, offset)
+      } else {
+        const edits = item.back?.imageEdits
+        const media = edits ? null : await mediaUri(side.assetId)
+        const assetLabel = side.assetId ? asset?.name || 'Attachment unavailable in export' : ''
+        const textHeight = edits ? imageFrameSize(item, 'back').y : media ? item.height * .45 : item.height
+        const body = [side.text, media || edits ? '' : assetLabel].filter(Boolean).join('\n') || (!side.title && !side.assetId ? 'The back is empty.' : '')
+        content = fill + backTextSvg(side.title, body, item.width, textHeight, cardInk, item.textAlign) +
+          (edits ? await editedMedia(side.assetId, item, edits) : media ? `<image href="${media}" x="8" y="${textHeight}" width="${Math.max(1, item.width - 16)}" height="${Math.max(1, item.height - textHeight - 8)}" preserveAspectRatio="xMidYMid meet"/>` : '')
+      }
+    } else if (item.kind === 'audio' || (item.kind === 'file' && (item.audioAppearance || item.assetId && assetMap.get(item.assetId)?.mime.startsWith('audio/')))) {
+      const asset = item.assetId ? assetMap.get(item.assetId) : undefined
+      content = (item.mode === 'card' ? fill : '') + await audioMarkup(item.name, item, asset, item.audioAppearance)
     } else if (item.kind === 'image') {
       const border = item.mode === 'direct' && item.border ? `<rect ${rect} rx="5" fill="none" stroke="${colour}" stroke-width="2"/>` : ''
       if (item.imageEdits) {
@@ -693,7 +790,7 @@ export async function renderProjectSvg(project: CanvasProject, options: CanvasEx
       const filled = item.mode === 'card' || item.kind === 'rectangle'
       content = (filled ? fill : '') + (item.kind === 'note' || item.text ? textSvg(item.text || item.name, item.width, item.height, filled ? cardInk : ink, 15, 13, 20, item.textAlign) : '')
     } else if (item.kind !== 'stack') {
-      const caption = item.caption || { audio: 'Audio', video: 'Video', file: 'Attachment', canvas: 'SubCanvas', page: 'Croft page' }[item.kind]
+      const caption = item.caption || { video: 'Video', file: 'Attachment', canvas: 'SubCanvas', page: 'Croft page' }[item.kind]
       content = `<rect ${rect} rx="8" fill="${surface}" stroke="${dot}"/>${textSvg(`${item.name}\n${caption || ''}`, item.width, item.height, ink, 13)}`
     } else content = ''
     fragments.set(item.id, `<g transform="translate(${item.x} ${item.y}) rotate(${item.rotation} ${item.width / 2} ${item.height / 2})" opacity="${item.opacity}">${content}</g>`)
@@ -783,8 +880,9 @@ export async function exportProject(projects: readonly CanvasProject[], projectI
     return
   }
   const scoped = scopeProjects(projects, root, options)
+  const audioBudget = newStaticAudioBudget()
   const render = async (project: CanvasProject) => {
-    const svg = await renderProjectSvg(project, format === 'jpg' || format === 'pdf' ? { ...options, background: options.background === 'transparent' ? 'clean' : options.background } : options, assets)
+    const svg = await renderProjectSvg(project, format === 'jpg' || format === 'pdf' ? { ...options, background: options.background === 'transparent' ? 'clean' : options.background } : options, assets, audioBudget)
     if (format === 'svg') return svg.blob
     const image = await raster(svg, format === 'png' ? 'image/png' : 'image/jpeg')
     return format === 'pdf' ? fitPdf(image, svg.width, svg.height) : image

@@ -30,7 +30,7 @@ try {
   attachChecks(page)
   await page.goto(origin)
   await page.locator('.ic-project-open').filter({ hasText: 'Holiday Ideas' }).waitFor()
-  const imageDigest = await page.evaluate(async () => {
+  const { imageDigest, audioDigest } = await page.evaluate(async () => {
     const store = await import('/src/features/icanvas/storage.ts')
     const { createProject, makeObject } = await import('/src/features/icanvas/model.ts')
     const { defaultImageEdits } = await import('/src/features/icanvas/imageEdits.ts')
@@ -67,19 +67,27 @@ try {
     const picture = makeObject('image', { x: 540, y: 90 }, { name: image.name, assetId: image.id, imageEdits: edits, mode: 'card',
       back: { title: 'Reverse map', text: 'Alternate route', assetId: image.id,
         imageEdits: { ...structuredClone(edits), look: { name: 'black-white', intensity: 70 } } } })
-    board.objects.push(picture)
+    const audioBuffer = Uint8Array.from('524946463400000057415645666d74201000000001000100401f0000803e0000020010006461746110000000000000400000c0ff0000a00060000000'.match(/../g), hex => parseInt(hex, 16))
+    const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' })
+    const sound = { id: 'synthetic-audio', name: 'Trail chime.wav', mime: audioBlob.type, size: audioBlob.size, blob: audioBlob }
+    const recording = makeObject('audio', { x: 540, y: 300 }, { name: sound.name, assetId: sound.id, mode: 'card',
+      audioAppearance: { mode: 'waveform', waveColour: '#458239bb', progressColour: '#732893' },
+      back: { title: 'Reverse chime', text: '', assetId: sound.id, audioAppearance: { mode: 'compact', playheadColour: '#958233' } } })
+    board.objects.push(picture, recording)
     board.swatches = [{ id: 'synthetic-colour', name: 'Trail green', colour: '#348757' }]
     board.stops = [{ id: 'synthetic-stop', name: 'Stop', canvasId: child.id, camera: child.camera, duration: 5 }]
     board.edges = [{ id: 'synthetic-edge', kind: 'relationship', from: departure.id, to: arrival.id, label: 'Night 1' }]
     const older = { ...board, objects: [departure, arrival, { ...media, back: { ...media.back, assetId: previous.id } },
       { ...stack, stack: { order: [media.id, departure.id], layout: 'fan' } },
-      { ...picture, imageEdits: { ...picture.imageEdits, straighten: -17 } }] }
-    await store.saveProjects([board, child, unopened], [current, link, previous, reverse, image])
+      { ...picture, imageEdits: { ...picture.imageEdits, straighten: -17 } },
+      { ...recording, audioAppearance: { ...recording.audioAppearance, progressColour: '#123456' } }] }
+    await store.saveProjects([board, child, unopened], [current, link, previous, reverse, image, sound])
     await store.saveVersion(older, 'Checkpoint with earlier attachment', [older, child])
     await store.saveRecovery({ ...older, name: 'Backup Expedition recovery test', updatedAt: board.updatedAt + 1 })
     await store.saveProjects([{ ...board, updatedAt: board.updatedAt + 2 }])
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await png.arrayBuffer()))
-    return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('')
+    const digest = async blob => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())),
+      byte => byte.toString(16).padStart(2, '0')).join('')
+    return { imageDigest: await digest(png), audioDigest: await digest(audioBlob) }
   })
   await page.reload()
   await page.getByRole('button', { name: 'Backup & restore', exact: true }).click()
@@ -152,7 +160,7 @@ try {
   const prefix = Buffer.alloc(64)
   const backupFile = await open(backupPath, 'r')
   try { await backupFile.read(prefix, 0, prefix.length, 0) } finally { await backupFile.close() }
-  assert.match(prefix.toString('utf8'), /^CROFT WORKSPACE BACKUP 3\n/)
+  assert.match(prefix.toString('utf8'), /^CROFT WORKSPACE BACKUP 4\n/)
   await writeFile(incomplete, prefix, { flag: 'wx' })
   await dialog.locator('input[type=file]').setInputFiles(incomplete)
   await dialog.getByRole('alert').filter({ hasText: 'incomplete' }).waitFor()
@@ -191,7 +199,12 @@ try {
     const priorImage = version.project.objects.find(item => item.id === image.id)
     const recoveredImage = recovery.project.objects.find(item => item.id === image.id)
     const sourceChart = state.assets.find(asset => asset.id === image.assetId)
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await sourceChart.blob.arrayBuffer()))
+    const recording = parent.objects.find(item => item.kind === 'audio')
+    const priorAudio = version.project.objects.find(item => item.id === recording.id)
+    const recoveredAudio = recovery.project.objects.find(item => item.id === recording.id)
+    const sourceAudio = state.assets.find(asset => asset.id === recording.assetId)
+    const digest = async blob => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer())),
+      byte => byte.toString(16).padStart(2, '0')).join('')
     return {
       ids: [parent.id, child.id, old.id],
       hierarchy: child.parentId === parent.id && parent.objects[1].targetId === child.id && parent.stops[0].canvasId === child.id,
@@ -207,17 +220,23 @@ try {
       imageState: image.imageEdits.crop.width === .5 && image.imageEdits.straighten === 0 && image.back.assetId === image.assetId &&
         image.back.imageEdits.look.intensity === 70 && priorImage.imageEdits.straighten === -17 && recoveredImage.imageEdits.straighten === -17 &&
         parent.swatches[0].colour === '#348757',
-      imageDigest: Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join(''),
+      imageDigest: await digest(sourceChart.blob),
+      audioState: recording.audioAppearance.mode === 'waveform' && recording.audioAppearance.waveColour === '#458239bb' &&
+        recording.audioAppearance.progressColour === '#732893' && recording.back.audioAppearance.mode === 'compact' &&
+        recording.back.audioAppearance.playheadColour === '#958233' && recording.back.assetId === recording.assetId &&
+        priorAudio.audioAppearance.progressColour === '#123456' && recoveredAudio.audioAppearance.progressColour === '#123456',
+      audioDigest: await digest(sourceAudio.blob),
       starterCount: state.projects.filter(project => project.name === 'Holiday Ideas').length,
     }
   })
   assert.deepEqual(sourceIds.filter(id => result.ids.includes(id)), [])
   assert.deepEqual({ ...result, ids: undefined }, {
     ids: undefined, hierarchy: true, edges: true, trash: true, media: 44 * MiB, bytes: '7'.repeat(20),
-    link: true, oldAttachment: 'draft history', history: true, recovery: true, stack: true, faces: true, imageState: true, imageDigest, starterCount: 2,
+    link: true, oldAttachment: 'draft history', history: true, recovery: true, stack: true, faces: true,
+    imageState: true, imageDigest, audioState: true, audioDigest, starterCount: 2,
   })
   assert.deepEqual(errors, [])
-  console.log(`iCanvas v3 workspace backup QA passed: Chrome writable stream, fresh profile restore, 44 MiB media, two-face image edits, project swatches, image SHA-256 ${imageDigest}, stack order, lineage, edges, links, Trash, versions and recovery.`)
+  console.log(`iCanvas v4 workspace backup QA passed: Chrome writable stream, fresh profile restore, 44 MiB media, independent two-face image and audio settings, swatches, image SHA-256 ${imageDigest}, audio SHA-256 ${audioDigest}, stack order, lineage, edges, links, Trash, versions and recovery.`)
 } finally {
   await browser.close()
   const target = path.resolve(workspace)

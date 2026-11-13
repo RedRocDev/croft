@@ -5,7 +5,7 @@ import { containsCardExtensions } from './stackPersistence.ts'
 export const maxProjectSwatches = 48
 export const maxSwatchNameLength = 80
 
-export type CanvasFormatVersion = 1 | 2 | 3
+export type CanvasFormatVersion = 1 | 2 | 3 | 4
 
 export function readProjectSwatches(value: unknown): ProjectSwatch[] {
   if (!Array.isArray(value) || value.length > maxProjectSwatches) throw new Error('Invalid project swatch list.')
@@ -44,6 +44,7 @@ export function assertCanvasImageMetadata(project: CanvasProject) {
 }
 
 export function canvasFormatVersion(projects: readonly CanvasProject[]): CanvasFormatVersion {
+  if (projects.some(project => project.objects.some(item => item.audioAppearance !== undefined || item.back?.audioAppearance !== undefined))) return 4
   if (projects.some(project => project.swatches !== undefined || project.edges.some(edge => edge.colour !== undefined) ||
     project.objects.some(item => item.imageEdits !== undefined || item.back?.imageEdits !== undefined || item.textColour !== undefined))) return 3
   return containsCardExtensions(projects) ? 2 : 1

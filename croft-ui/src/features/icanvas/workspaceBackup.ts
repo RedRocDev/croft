@@ -3,6 +3,7 @@ import type { CanvasAsset, CanvasProject } from './model.ts'
 import type { CanvasRecovery, CanvasVersion, WorkspaceStorageState } from './storage.ts'
 import { assertStackMembership } from './stackPersistence.ts'
 import { assertEditedImageAsset, canvasFormatVersion, editedImageAssetIds, type CanvasFormatVersion } from './imagePersistence.ts'
+import { assertStyledAudioAsset, styledAudioAssetIds } from './audioAppearance.ts'
 
 export type WorkspaceBackupInventory = {
   projects: number; trashed: number; versions: number; recoveries: number; bytes: number;
@@ -19,6 +20,7 @@ const encoder = new TextEncoder()
 const magicV1 = encoder.encode('CROFT WORKSPACE BACKUP 1\n')
 const magicV2 = encoder.encode('CROFT WORKSPACE BACKUP 2\n')
 const magicV3 = encoder.encode('CROFT WORKSPACE BACKUP 3\n')
+const magicV4 = encoder.encode('CROFT WORKSPACE BACKUP 4\n')
 const decoder = new TextDecoder('utf-8', { fatal: true })
 const metadataLimit = 64 * 1024 ** 2
 const mediaChunk = 1024 ** 2
@@ -155,6 +157,11 @@ function metadata(bytes: Uint8Array, version: CanvasFormatVersion): SnapshotMeta
     check(!asset?.copied || asset.mime !== 'application/octet-stream', 'Edited image source data do not match a supported raster image.')
     assertEditedImageAsset(asset)
   }
+  for (const id of styledAudioAssetIds(scenes)) {
+    const asset = assetMap.get(id)
+    check(!asset?.copied || asset.mime !== 'application/octet-stream', 'Audio appearance requires an audio source.')
+    assertStyledAudioAsset(asset)
+  }
   for (const scene of scenes) {
     const objects = unique(scene.objects, 'object')
     unique(scene.edges, 'edge')
@@ -180,7 +187,7 @@ export function prepareWorkspaceBackup(snapshot: WorkspaceStorageState) {
   const bytes = encoder.encode(JSON.stringify({ projects, versions, recoveries, assets }))
   check(bytes.byteLength <= metadataLimit, 'Workspace history and canvas metadata exceed the 64 MiB backup header limit. Data were not backed up.')
   metadata(bytes, version)
-  const magic = version === 3 ? magicV3 : version === 2 ? magicV2 : magicV1
+  const magic = version === 4 ? magicV4 : version === 3 ? magicV3 : version === 2 ? magicV2 : magicV1
   return { manifest: bytes, magic, blobs: snapshot.assets.flatMap(asset => asset.blob ? [asset.blob] : []) }
 }
 
@@ -241,7 +248,7 @@ export async function parseWorkspaceBackup(file: Blob, options: TransferOptions 
     return bytes
   }
   const magic = await read(magicV1.length)
-  const version = bytesEqual(magic, magicV3) ? 3 : bytesEqual(magic, magicV2) ? 2 : 1
+  const version = bytesEqual(magic, magicV4) ? 4 : bytesEqual(magic, magicV3) ? 3 : bytesEqual(magic, magicV2) ? 2 : 1
   check(version !== 1 || bytesEqual(magic, magicV1), 'Unsupported Croft workspace backup format.')
   const length = new DataView((await read(4)).buffer).getUint32(0, true)
   check(length > 0 && length <= metadataLimit, 'Workspace backup header is oversized.')
@@ -249,7 +256,9 @@ export async function parseWorkspaceBackup(file: Blob, options: TransferOptions 
   const manifest = await read(length)
   check(bytesEqual(await digest(manifest), manifestHash), 'Workspace backup metadata failed its checksum.')
   const { projects, versions, recoveries, assets: entries } = metadata(manifest, version)
-  const editedIds = editedImageAssetIds(allScenes({ projects, versions, recoveries }))
+  const scenes = allScenes({ projects, versions, recoveries })
+  const editedIds = editedImageAssetIds(scenes)
+  const audioIds = styledAudioAssetIds(scenes)
   const embedded = entries.filter(asset => asset.copied)
   const total = embedded.reduce((sum, asset) => sum + asset.size, 0)
   const payload = embedded.reduce((sum, asset) => sum + asset.size + Math.ceil(asset.size / mediaChunk) * digestBytes, 0)
@@ -293,6 +302,7 @@ export async function parseWorkspaceBackup(file: Blob, options: TransferOptions 
       }
       const asset = { id, name, mime: type, size, blob: new Blob(pieces, { type }) }
       if (editedIds.has(id)) assertEditedImageAsset(asset)
+      if (audioIds.has(id)) assertStyledAudioAsset(asset)
       assets.push(asset)
     }
   } finally {
@@ -333,8 +343,10 @@ export function cloneWorkspaceBackup(snapshot: WorkspaceStorageState): Workspace
         assetId: object.assetId && translate(assetIds, object.assetId),
         targetId: object.kind === 'canvas' && object.targetId ? translate(projectIds, object.targetId) : object.targetId,
         ...(object.imageEdits ? { imageEdits: structuredClone(object.imageEdits) } : {}),
+        ...(object.audioAppearance ? { audioAppearance: { ...object.audioAppearance } } : {}),
         ...(object.back ? { back: { ...object.back, assetId: object.back.assetId && translate(assetIds, object.back.assetId),
-          ...(object.back.imageEdits ? { imageEdits: structuredClone(object.back.imageEdits) } : {}) } } : {}),
+          ...(object.back.imageEdits ? { imageEdits: structuredClone(object.back.imageEdits) } : {}),
+          ...(object.back.audioAppearance ? { audioAppearance: { ...object.back.audioAppearance } } : {}) } } : {}),
         ...(object.stack ? { stack: { ...object.stack, order: object.stack.order.map(id => translate(objects, id)) } } : {}),
       })),
       edges: project.edges.map(edge => ({ ...edge, id: translate(edges, edge.id), from: translate(objects, edge.from), to: translate(objects, edge.to) })),
